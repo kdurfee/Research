@@ -149,6 +149,10 @@ class HWConv(Operator):
     def PrintInfo(self):
         print "---HWCOnv Operator ID is :" + str(self.ID) + ' and associated core is:' +str(self.core.ID)
         print '----- R: '+str(self.R)+ ' S:' + str(self.S) + ' K:' +str(self.K)
+        print '-----inputActivations: ----'
+        print self.inputActivations
+        print '-----outputActivations: ----'
+        print self.outputActivations        
     def GetInputActCount(self):
         count=0
         for ia in self.inputActivations:
@@ -680,6 +684,109 @@ class Core(object):
     def PrintInfo(self):
         print '---Core ID:' + str(self.ID) + ' pRow:' +str(self.pRow)+' pCol:'+str(self.pCol)
 
+#Class to represent a residual block
+#this block usually has two inputs
+#this block contains multiple convolution layers and batch norm layers
+class Res(Operator):
+    def __init__(self,ID,convCount):
+        super(Res,self).__init__(ID)
+        print "ID is " + ID
+        print "self id is " + self.ID
+        self.conv=[]
+        self.bn=[]
+        self.convCount=convCount
+        self.internalActivations=defaultdict(Activation)
+        self.internalGradients=defaultdict(Gradient)
+        #super has input activation list and output activation list
+        #but we need to create more internally to connect things up
+    def PrintInfo(self):
+        print "---Residual BLock ID is :" + str(self.ID) + ' and associated core is:' +str(self.core.ID)
+        print '----- Convs are :'
+        print self.conv
+        print '----- BNs are :'
+        print self.bn
+        print '---end of info---'
+    def PrintInternalInfo(self):
+        print "Internal Convolution Ops"
+        for c in self.conv:
+            c.PrintInfo()
+        print "Internal BN Ops"
+        for b in self.bn:
+            b.PrintInfo()
+        print '----end of internal info---'
+    #need to be able to add convolution layers to this residual block
+    def AddConv(self,h,w,newConv):
+        #conv object is expected to have parameters set, but not activations or gradients        
+        #if this is the first conv layer, then we will use the 'primary' inputs
+        #these will be added later so just leave for now
+        if len(self.conv)!=0:
+        #otherwise the input activation is the output from the previous
+            newConv.AddInputAct(self.conv[len(self.conv)-1].outputActivations[0])
+        #opposite for gradients,output is input of previous layer
+            newConv.AddOutputGrad(self.conv[len(self.conv)-1].inputGradients[0])
+           
+        #if it is the last conv layer, then use the 'primary' output activations and gradients
+        #set later so just leave for now
+        if len(self.conv)!=self.convCount-1:
+            internalID='Conv'+self.ID+'_'+str(len(self.conv))
+            #otherwise create a new output activation                        
+            #H and W are inputs
+            #C is already set in the conv itself
+            c=newConv.C
+            newAct=Activation(internalID,h,w,c)
+            newConv.AddOutputAct(newAct)
+            self.internalActivations[internalID]=newAct
+            #for gradients, same thing but need to create input not output
+            newGrad=Gradient(internalID,h,w,c)
+            newConv.AddInputGrad(newGrad)
+            self.internalGradients[internalID]=newGrad
+
+        #add the convolution block to internal list
+        self.conv.append(newConv)
+        
+        #add corresponding batch norm block to the internal list
+        newBN = Batch('BN'+self.ID+'_'+str(len(self.conv)))
+        #HACK for now just create new ones
+        dummyAct=Activation('Act'+self.ID+'_'+str(len(self.conv)),h,w,newConv.K)
+        dummyGrad=Activation('Grad'+self.ID+'_'+str(len(self.conv)),h,w,newConv.K)
+        #we dont actually need the graph to be intact internally (HUGE HACK)
+        newBN.AddInputAct(dummyAct)
+        newBN.AddOutputAct(dummyAct)
+        newBN.AddInputGrad(dummyGrad)
+        newBN.AddOutputGrad(dummyGrad)
+        newBN.SetCore(newConv.core)
+        self.bn.append(newBN)
+        
+        
+        
+    def AddInputAct(self,act):
+        #input activation is also input to first conv
+        self.conv[0].AddInputAct(act)
+        super(Res,self).AddInputAct(act)
+    def AddOutputAct(self,act):
+        #output activation is also the output of the last conv
+        self.conv[len(self.conv)-1].AddOutputAct(act)
+        super(Res,self).AddOutputAct(act)
+    def AddInputGrad(self,act):
+        #input gradient is also input to last conv
+        self.conv[len(self.conv)-1].AddInputGrad(act)
+        super(Res,self).AddInputGrad(act)
+    def AddOutputGrad(self,act):
+        #output activation is also output of first conv
+        self.conv[0].AddOutputGrad(act)
+        super(Res,self).AddOutputGrad(act)
+        self.PrintInternalInfo()
+
+        
+
+
+
+
+
+
+
+
+        
 class Network(object):
     def __init__(self):
         self.name = None
@@ -750,9 +857,39 @@ class Network(object):
                 start = o.findall('startType')[0].text
                 end = o.findall('endType')[0].text
                 newOp=Transpose(opID,start,end)
+            elif (type == 'ResHW' or type=='ResCK'):
+                convCount = int(o.findall('convCount')[0].text)
+                inH=int(o.findall('inH')[0].text)
+                inW=int(o.findall('inW')[0].text)
+                outH=int(o.findall('outH')[0].text)
+                outW=int(o.findall('outW')[0].text)
+                #create residual block
+                newOp=Res(opID,convCount)
+                #loop through all internal convolutions
+                #TODO check == convCount
+                for idx,conv in enumerate(o.findall('conv')):
+                    r= int(conv.findall('R')[0].text)
+                    s= int(conv.findall('S')[0].text)
+                    if idx==0:
+                        c= int(conv.findall('C')[0].text)
+                        w=inW
+                        H=inH
+                    else:
+                        c=k #c is equal to the k value from the last loop if not first
+                        w=outW
+                        h=outH
+                        
+                    k= int(conv.findall('K')[0].text)
+                    if type =='ResHW':
+                        toadd = HWConv(idx,r,s,c,k)
+                    else:
+                        toadd = CKConv(idx,r,s,c,k)
+                    toadd.SetCore(self.cores[core])
+                    newOp.AddConv(h,w,toadd)
+                newOp.PrintInternalInfo()
             else:
                 newOp = None #SHOULD NEVER GET HERE, SANITY
-                
+
             #set core
             newOp.SetCore(self.cores[core])
             #set all input/output activations/gradients            
