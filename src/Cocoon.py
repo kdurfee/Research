@@ -5,7 +5,7 @@ matplotlib.use('TkAgg')
 from collections import defaultdict
 import math
 #Global value for conversions from bits to MB
-MBCONVERSION = .000122070312
+MBCONVERSION = .000000125
 
 #activations and gradients connect all operator blocks
 class Activation(object):
@@ -174,8 +174,7 @@ class HWConv(Operator):
             count += math.ceil(og.H/self.core.pCol) * math.ceil(og.W/self.core.pRow) * og.C
         return count
     def GetWeightCount(self):
-        count=self.R * self.S * self.K * self.C
-        return count
+        return (self.R * self.S * self.K * self.C)
     
     def GetInputActAccesses(self):
         acc=0
@@ -309,7 +308,7 @@ class CKConv(Operator):
             count += og.H * og.W * math.ceil(og.C/self.core.pCol)
         return count
     def GetWeightCount(self):
-        return self.R * self.S * math.ceil(self.K/self.core.pRow) * math.ceil(self.C/self.core.pCol)
+        return (self.R * self.S * math.ceil(self.K/self.core.pRow) * math.ceil(self.C/self.core.pCol))
     
     def GetInputActAccesses(self):
         acc=0
@@ -440,7 +439,7 @@ class FC(Operator):
         #TODO assumes dimension of first input is correct
         #and will be combined with other inputs of same dimension before MAC
         if len(self.inputActivations) != 0:
-            count+=math.ceil(self.M/self.core.pCol) * ((self.inputActivations[0].H*self.inputActivations[0].W*math.ceil(self.inputActivations[0].C)/self.core.pRow))
+            count+=(math.ceil(self.M/self.core.pCol) * ((self.inputActivations[0].H*self.inputActivations[0].W*math.ceil(self.inputActivations[0].C)/self.core.pRow)))
         return count
     
     def GetInputActAccesses(self):
@@ -672,8 +671,35 @@ class RELU(Operator):
     #TODO
     
 class Batch(Operator):
-    def __init__(self,ID):
+    def __init__(self,ID,batchSize):
         super(Batch,self).__init__(ID)
+        self.batchSize=batchSize
+    def GetWeightCount(self):
+        #Bach Norm Doesn't Have Weights
+        return 0
+    def GetInputActCount(self):
+        count=0
+        if len(self.inputActivations >0):
+            count += self.inputActivations[0].H * self.inputActivations[0]*W * self.inputActivations[0].C * self.batchSize
+        return count
+            
+    def GetOutputActCount(self):
+        count=0
+        if len(self.outputActivations >0):
+            count += self.outputActivations[0].H * self.outputActivations[0]*W * self.outputActivations[0].C * self.batchSize        
+        return count
+    
+    def GetOutputGradCount(self):
+        count=0
+        if len(self.outputGradients >0):
+            count += self.outputGradients[0].H * self.outputGradients[0]*W * self.outputGradients[0].C * self.batchSize        
+        return count
+
+    def GetInputGradCount(self):
+        count=0
+        if len(self.inputGradients >0):
+            count += self.inputGradients[0].H * self.inputGradients[0]*W * self.inputGradients[0].C * self.batchSize                
+        return count    
     #TODO
     
 class Core(object):
@@ -688,12 +714,13 @@ class Core(object):
 #this block usually has two inputs
 #this block contains multiple convolution layers and batch norm layers
 class Res(Operator):
-    def __init__(self,ID,convCount):
+    def __init__(self,ID,convCount,batchSize):
         super(Res,self).__init__(ID)
         print "ID is " + ID
         print "self id is " + self.ID
         self.conv=[]
         self.bn=[]
+        self.batchSize=batchSize
         self.convCount=convCount
         self.internalActivations=defaultdict(Activation)
         self.internalGradients=defaultdict(Gradient)
@@ -743,9 +770,9 @@ class Res(Operator):
 
         #add the convolution block to internal list
         self.conv.append(newConv)
-        
+
         #add corresponding batch norm block to the internal list
-        newBN = Batch('BN'+self.ID+'_'+str(len(self.conv)))
+        newBN = Batch('BN'+self.ID+'_'+str(len(self.conv)),self.batchSize)
         #HACK for now just create new ones
         dummyAct=Activation('Act'+self.ID+'_'+str(len(self.conv)),h,w,newConv.K)
         dummyGrad=Activation('Grad'+self.ID+'_'+str(len(self.conv)),h,w,newConv.K)
@@ -776,6 +803,13 @@ class Res(Operator):
         self.conv[0].AddOutputGrad(act)
         super(Res,self).AddOutputGrad(act)
         self.PrintInternalInfo()
+    #return list of all internal statistics    
+    def GetWeightCount(self):
+        wc=[]
+        for x in range(0,len(self.conv)):
+            wc.append(self.conv[x].GetWeightCount())
+            wc.append(self.bn[x].GetWeightCount())
+        return wc
 
         
 
@@ -859,12 +893,13 @@ class Network(object):
                 newOp=Transpose(opID,start,end)
             elif (type == 'ResHW' or type=='ResCK'):
                 convCount = int(o.findall('convCount')[0].text)
+                batchSize = int(o.findall('batchSize')[0].text)
                 inH=int(o.findall('inH')[0].text)
                 inW=int(o.findall('inW')[0].text)
                 outH=int(o.findall('outH')[0].text)
                 outW=int(o.findall('outW')[0].text)
                 #create residual block
-                newOp=Res(opID,convCount)
+                newOp=Res(opID,convCount,batchSize)
                 #loop through all internal convolutions
                 #TODO check == convCount
                 for idx,conv in enumerate(o.findall('conv')):
@@ -965,10 +1000,18 @@ class Network(object):
         mem=[]
         if index==None:            
             for oid in self.opIDs:
-                mem.append(self.ops[oid].GetInputActCount() * self.precision * MBCONVERSION)
+                if isinstance(self.ops[self.opIDs[index]].InputActCount(),list):
+                    for a in self.ops[self.opIDs[index]].GetInputActCount():
+                        mem.append(a * self.precision * MBCONVERSION)                    
+                else:
+                    mem.append(self.ops[oid].GetInputActCount() * self.precision * MBCONVERSION)
         else:
             self.ops[self.opIDs[index]].PrintInfo()
-            mem.append(self.ops[self.opIDs[index]].GetInputActCount()*self.precision * MBCONVERSION)
+            if isinstance(self.ops[self.opIDs[index]].GetInputActCount(),list):
+                for a in self.ops[self.opIDs[index]].GetInputActCount():
+                    mem.append(a * self.precision * MBCONVERSION)                    
+            else:
+                mem.append(self.ops[self.opIDs[index]].GetInputActCount()*self.precision * MBCONVERSION)
         return mem
     
     def GetPEOutputActMem(self,index=None):
@@ -1005,10 +1048,18 @@ class Network(object):
         mem=[]
         if index==None:            
             for oid in self.opIDs:
-                mem.append(self.ops[oid].GetWeightCount() * self.precision * MBCONVERSION)
+                if isinstance(self.ops[self.opIDs[index]].GetWeightCount(),list):
+                    for w in self.ops[self.opIDs[index]].GetWeightCount():
+                        mem.append(w * self.precision * MBCONVERSION)
+                else:
+                    mem.append(self.ops[self.opIDs[index]].GetWeightCount() * self.precision * MBCONVERSION)
         else:
             self.ops[self.opIDs[index]].PrintInfo()
-            mem.append(self.ops[self.opIDs[index]].GetWeightCount()*self.precision * MBCONVERSION)
+            if isinstance(self.ops[self.opIDs[index]].GetWeightCount(),list):
+                for w in self.ops[self.opIDs[index]].GetWeightCount():
+                    mem.append(w * self.precision * MBCONVERSION)
+            else:
+                mem.append(self.ops[self.opIDs[index]].GetWeightCount()*self.precision * MBCONVERSION)
         return mem
 
     def GetPEMem(self,index=None):
@@ -1017,7 +1068,6 @@ class Network(object):
             for oid in self.opIDs:
                 mem.append((self.ops[oid].GetWeightCount()+self.ops[oid].GetInputActCount()+self.ops[oid].GetInputGradCount()) * self.precision * MBCONVERSION)
         else:
-            self.ops[self.opIDs[index]].PrintInfo()
             mem.append((self.ops[self.opIDs[index]].GetWeightCount()+self.ops[self.opIDs[index]].GetInputActCount()+self.ops[self.opIDs[index]].GetInputGradCount())*self.precision * MBCONVERSION)
         return mem
     
@@ -1152,14 +1202,11 @@ class Network(object):
 
     #function to plot two lists, x being a list of operator IDs
     #x axis is assumed to be the operator IDs
-    def PlotOps(self,title,ylabel,y):
-        plt.xlabel('OP ID')
+    def PlotOps(self,title,xlabel,x,ylabel,y):
+        plt.xlabel(xlabel)
         plt.ylabel(ylabel)
         plt.title(title)
-        x=[]
-        for i in range(0,len(self.opIDs)):
-            x.append(i)
-        labels=self.opIDs
+        labels=x
         plt.bar(x,y,align='center')
         plt.xticks(x,labels)
         plt.show()

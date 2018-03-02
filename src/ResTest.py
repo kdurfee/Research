@@ -51,7 +51,8 @@ Monarch.PrintNetwork()
 #print Monarch.GetPEHBroadcastBW()
 #print '---V Broadcast BW---'
 #print Monarch.GetPEVBroadcastBW()
-Monarch.PlotOps('Total Memory per Op','Memory in MB',Monarch.GetPEMem())
+Monarch.PlotOps('Res Memory per Op','ID',[1,2,3,4,5,6],'Memory in MB',Monarch.GetPEWeightMem(1))
+Monarch.PlotOps('Res Memory per Op','ID',[1,2,3,4,5,6],'Memory in MB',Monarch.GetPEInputActMem(1))
 
 #Monarch.PlotOps('Input Mem Per Op','mem in MB',Monarch.GetPEInputActMem())
 

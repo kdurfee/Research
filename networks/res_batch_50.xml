@@ -59,6 +59,7 @@
     <inputGrad>2</inputGrad>
     <outputGrad>1</outputGrad>
     <convCount>3</convCount>
+    <batchSize>100</batchSize>
     <inH>56</inH>
     <inW>56</inW>
     <outH>56</outH>
@@ -66,7 +67,7 @@
     <conv>
       <R>1</R>
       <S>1</S>
-      <C>96</C>
+      <C>64</C>
       <K>64</K>
     </conv>
     <conv>
@@ -104,6 +105,7 @@
     <inputGrad>3</inputGrad>
     <outputGrad>2</outputGrad>
     <convCount>3</convCount>
+    <batchSize>100</batchSize>    
     <inH>56</inH>
     <inW>56</inW>
     <outH>56</outH>
@@ -111,7 +113,7 @@
     <conv>
       <R>1</R>
       <S>1</S>
-      <C>96</C>
+      <C>256</C>
       <K>64</K>
     </conv>
     <conv>
@@ -149,6 +151,7 @@
     <inputGrad>4</inputGrad>
     <outputGrad>3</outputGrad>
     <convCount>3</convCount>
+    <batchSize>100</batchSize>    
     <inH>56</inH>
     <inW>56</inW>
     <outH>56</outH>
@@ -156,7 +159,7 @@
     <conv>
       <R>1</R>
       <S>1</S>
-      <C>96</C>
+      <C>256</C>
       <K>64</K>
     </conv>
     <conv>
@@ -194,6 +197,7 @@
     <inputGrad>4</inputGrad>
     <outputGrad>5</outputGrad>
     <convCount>3</convCount>
+    <batchSize>100</batchSize>    
     <inH>56</inH>
     <inW>56</inW>
     <outH>28</outH>
@@ -239,6 +243,7 @@
     <inputGrad>6</inputGrad>
     <outputGrad>5</outputGrad>
     <convCount>3</convCount>
+    <batchSize>100</batchSize>    
     <inH>28</inH>
     <inW>28</inW>
     <outH>28</outH>
@@ -283,7 +288,8 @@
     <outputAct>7</outputAct>
     <inputGrad>7</inputGrad>
     <outputGrad>6</outputGrad>
-    <convCount>3</convCount>
+    <convCount>3</convCount> 
+    <batchSize>100</batchSize>   
     <inH>28</inH>
     <inW>28</inW>
     <outH>28</outH>
@@ -329,6 +335,7 @@
     <inputGrad>8</inputGrad>
     <outputGrad>7</outputGrad>
     <convCount>3</convCount>
+    <batchSize>100</batchSize>    
     <inH>28</inH>
     <inW>28</inW>
     <outH>28</outH>
@@ -375,6 +382,7 @@
     <inputGrad>9</inputGrad>
     <outputGrad>8</outputGrad>
     <convCount>3</convCount>
+    <batchSize>100</batchSize>    
     <inH>28</inH>
     <inW>28</inW>
     <outH>14</outH>
@@ -420,6 +428,7 @@
     <inputGrad>10</inputGrad>
     <outputGrad>9</outputGrad>
     <convCount>3</convCount>
+    <batchSize>100</batchSize>    
     <inH>14</inH>
     <inW>14</inW>
     <outH>14</outH>
@@ -464,7 +473,8 @@
     <outputAct>11</outputAct>
     <inputGrad>11</inputGrad>
     <outputGrad>10</outputGrad>
-    <convCount>3</convCount>
+    <convCount>3</convCount> 
+    <batchSize>100</batchSize>   
     <inH>14</inH>
     <inW>14</inW>
     <outH>14</outH>
@@ -510,6 +520,7 @@
     <inputGrad>12</inputGrad>
     <outputGrad>11</outputGrad>
     <convCount>3</convCount>
+    <batchSize>100</batchSize>    
     <inH>14</inH>
     <inW>14</inW>
     <outH>14</outH>
@@ -554,7 +565,8 @@
     <outputAct>13</outputAct>
     <inputGrad>13</inputGrad>
     <outputGrad>12</outputGrad>
-    <convCount>3</convCount>
+    <convCount>3</convCount> 
+    <batchSize>100</batchSize>   
     <inH>14</inH>
     <inW>14</inW>
     <outH>14</outH>
@@ -600,6 +612,7 @@
     <inputGrad>14</inputGrad>
     <outputGrad>13</outputGrad>
     <convCount>3</convCount>
+    <batchSize>100</batchSize>    
     <inH>14</inH>
     <inW>14</inW>
     <outH>14</outH>
@@ -645,7 +658,8 @@
     <outputAct>15</outputAct>
     <inputGrad>15</inputGrad>
     <outputGrad>14</outputGrad>
-    <convCount>3</convCount>
+    <convCount>3</convCount> 
+    <batchSize>100</batchSize>   
     <inH>14</inH>
     <inW>14</inW>
     <outH>7</outH>
@@ -691,6 +705,7 @@
     <inputGrad>16</inputGrad>
     <outputGrad>15</outputGrad>
     <convCount>3</convCount>
+    <batchSize>100</batchSize>    
     <inH>7</inH>
     <inW>7</inW>
     <outH>7</outH>
@@ -736,6 +751,7 @@
     <inputGrad>17</inputGrad>
     <outputGrad>16</outputGrad>
     <convCount>3</convCount>
+    <batchSize>100</batchSize>    
     <inH>7</inH>
     <inW>7</inW>
     <outH>7</outH>
