@@ -8,7 +8,13 @@ import math
 MBCONVERSION = .000000125
 PROW=8
 PCOL=8
-  
+#easy enum for weight stationary or activation stationay
+WS=1
+AS=2
+#easy enum for HW or CK
+HW=3
+CK=4
+
 #parent class for all operator blocks
 class Operator(object):
     def __init__(self,ID,H=None,W=None,C=None,K=None,R=None,S=None,BS=None,M=None):
@@ -43,27 +49,17 @@ class Operator(object):
     def GetWeightCount(self):
         pass
     #accesses for power and cycles
-    def GetInputActAccesses(self):
+    def GetActAccesses(self):
         pass
-    def GetOutputActAccesses(self):
-        pass
-    def GetInputGradAccesses(self):
-        pass
-    def GetOutputGradAccesses(self):
+    def GetGradAccesses(self):
         pass
     def GetWeightAccesses(self):
         pass
-    #MAC for power and cycles
-    def GetForwardMAC(self):
+    def GetMAC(self):
         pass
-    def GetBackwardMAC(self):
+    def GetCycles(self):
         pass
-    #cycles
-    def GetForwardCycles(self):
-        pass
-    def GetBackwardCycles(self):
-        pass
-    #BW
+    #BW TODO
     def GetHSystolicBW(self):
         pass
     def GetVSystolicBW(self):
@@ -74,8 +70,9 @@ class Operator(object):
         pass
     
 class HWConv(Operator):
-    def __init__(self,id,h,w,r,s,c,k):
+    def __init__(self,id,h,w,r,s,c,k,stationary):
         super(HWConv,self).__init__(ID=id,H=h,W=w,R=r,S=s,C=c,K=k)
+        self.stationary=stationary
     def GetInputActCount(self):
         count = math.ceil(self.H/PCOL) * math.ceil(self.W/PROW) * self.C
         return count
@@ -90,74 +87,128 @@ class HWConv(Operator):
         return count
     def GetWeightCount(self):
         return (self.R * self.S * self.K * self.C)
+
+    def GetActAccesses(self):
+        fwd=0
+        bck=0
+        wgt=0
+        #--------------------
+        #forward
+        if self.stationary==WS:
+            #weight stationary we read every input activation once per every weight
+            #and for each of these we write to the output activation
+            fwd+=2*(self.GetWeightCount()*math.ceil(self.H/PCOL) * math.ceil(self.W/PROW))
+        else:
+            #if we are activaiton stationary then we read every activation once
+            #and write each output once for every calculation
+            fwd+=self.GetInputActCount() + (self.GetWeightCount()*math.ceil(self.H/PCOL) * math.ceil(self.W/PROW))
+        #--------------------
+        #backward
+        #back pass is between gradients and weights
+                
+        #--------------------
+        #weight update
+        if self.stationary==WS:
+            #not activation stationary means for every gradient we multiply it by (RxS) input activation values
+            wgt+=self.GetInputGradCount()*(self.R*self.S)
+        else:
+            #if activation is stationary then they are all read once
+            wgt+=self.GetInputActCount()
+            
+        return (fwd,bck,wgt)
     
-    def GetInputActAccesses(self):
-        acc=0
-        #we read the input activations all once per weight (weight stationary) in the forward pass to calculate output
-        acc+= self.GetInputActCount() * self.R * self.S * self.K
-        #we read the input activations once per output gradient to calculate weight updates (output gradient stationary)
-        acc += self.GetInputActCount() * math.ceil(self.H/PCOL) * math.ceil(self.W/PROW) * self.K
-        return acc
-    def GetOutputActAccesses(self):
-        acc=0
-        #output activations are written to with forward pass results and accumulated for each operation on input activations
-        acc+=self.GetInputActCount() * self.R * self.S * self.K
-        return acc
-    def GetInputGradAccesses(self):
-        acc=0
-        #input gradients are read in the backward pass to produce output gradients
-        acc+= self.GetInputGradCount() * self.R * self.S * self.C
-        return acc
-    def GetOutputGradAccesses(self):
-        acc=0
-        #output gradients are written to in the backward pass to produce partial gradient for each K
-        acc+=self.GetInputGradCount() * self.R * self.S * self.C
-        #output gradients are read from to calculate weight update values (gradient stationary so once each)
-        acc += math.ceil(self.H/PCOL) * math.ceil(self.W/PROW) * self.K
-        #output gradients are them accumulated in the K dimension
-        self.GetOutputGradCount() * self.K
-        return acc
+    def GetGradAccesses(self):
+        fwd=0
+        bck=0
+        wgt=0
+        #--------------------
+        #forward
+        #only activations and weights
+        #--------------------
+        #backward
+        if self.stationary==WS:
+            #if weight stationary, every gradient is multiplied by 1 full weight kernel
+            #and each time we write to an output
+            bck+=2*(math.ceil(self.getWeightCount()/self.K)*self.GetInputGradientCount())
+        else:
+            #if not weight stationary, then we read each input once
+            bck+=self.GetInputGradientCount()
+        #--------------------
+        #weight update
+        if self.stationary==WS:
+            #if not activation stationary, then each gradient is read once
+            self.GetInputGradientCount()
+        else:
+            #if activation stationary, each gradient read (RxS) times per activation
+            wgt+=self.R*self.S*self.GetInputActivationCount()
+        return (fwd,bck,wgt)
+    
     def GetWeightAccesses(self):
-        acc=0
-        #read weights once each in forward pass (weight stationary)
-        acc+=self.GetWeightCount()
-        #read weights once each in backward pass (weight stationary)
-        acc+=self.GetWeightCount()
-        #RMW to weights for updates
-        acc+=2*self.GetWeightCount()
-        return acc
-    def GetForwardMAC(self):
-        mac=0
-        #every local weight is multiplied by input activations
-        mac += self.GetInputActCount() * self.R * self.S * self.K
-        return mac
-    def GetBackwardMAC(self):
-        mac=0
-        #calculate per K output gradients
-        mac += self.GetInputGradCount() * self.R * self.S * self.C
-        #calculate weight update values
-        mac+=self.GetInputActCount() * self.GetOutputGradCount()/self.C #each input is convolved by a spatial H,W tile of outputs, but one conv window
-        return mac
-    def GetForwardCycles(self):
-        cycles=0
-        #cycles for forward PE
-        cycles += self.GetForwardMAC()
-        #H,W has to share halos with adjacent. send/recieve overlap
-        cycles += math.ceil(self.H/PCOL)*(self.R-1) + math.ceil(self.W/PROW) * (self.S-1) * self.K
-        #NOTE transition from HW to CK done in seperate operator
-        return cycles
-    def GetBackwardCycles(self):
-        cycles=0
-        #backward pass MAC
-        cycles +=self.GetBackwardMAC()
-        #backward halos
-        cycles += math.ceil(self.H/PCOL)*(self.R-1) + math.ceil(self.W/PROW) * (self.S-1) * self.C
-        #HW has expensive systolic all gather of weight updates, to/from all PEs to accumulate, then again to broadcast
-        cycles+=2*(self.GetWeightCount()*PCOL) + 2*(self.GetWeightCount()*PROW)
-        #cycles to update local weight values
-        cycles +=self.GetWeightCount()
-        #NOTE transition from CK to HW done in seperate operator
-        return cycles
+        fwd=0
+        bck=0
+        wgt=0
+        #--------------------
+        #forward
+        if self.stationary==WS:
+            #if weight stationary, each read once
+            fwd+=self.GetWeightCount()
+        else:
+            #if activation stationary each is read once per input activation calc
+            fwd+=(self.GetWeightCount()*math.ceil(self.H/PCOL) * math.ceil(self.W/PROW))
+        #--------------------
+        #backward
+        if self.stationary==WS:
+            #if weight stationary, each read once
+            bck+=self.GetWeightCount()
+        else:
+            #if activation stationary a kernel is read once per input gradient
+            bck+=math.ceil(self.GetWeightCount()/self.K)*self.GetInputGradCount()
+        #--------------------
+        #weight update
+        #either way, we write to the weights to update them
+        wgt+=self.GetWeightCount()
+        
+        return (fwd,bck,wgt)
+    
+    def GetMAC(self):
+        fwd=0
+        bck=0
+        wgt=0
+
+        
+        return (fwd,bck,wgt)
+    
+    def GetCycles(self):
+        fwd=0
+        bck=0
+        wgt=0
+        #--------------------
+        #forward
+        #MAC cycles
+        fwd+=(self.GetWeightCount()*math.ceil(self.H/PCOL) * math.ceil(self.W/PROW))
+        #halo sharing cycles send and recieve overlap (after C reduction)        
+        fwd += math.ceil(self.H/PCOL)*(self.R-1) + math.ceil(self.W/PROW) * (self.S-1) * self.K
+        #--------------------
+        #backward
+        #MAC cycles
+        bck+=self.GetInputGradCount() * math.ceil(self.GetWeightCount()/self.K)
+        #halo sharing, need for every weight update so C dimension as well
+        bck += math.ceil(self.H/PCOL)*(self.R-1) + math.ceil(self.W/PROW) * (self.S-1) * self.K * self.C
+        #accumulation in K dimension of per weight gradients
+        #mean K additions for every output gradient value
+        bck += self.K * self.GetOutputGradCount()
+        
+        #--------------------
+        #weight update
+        #MAC Cycles
+        wgt+=self.GetInputGradCount() * (self.R * self.S)
+        #all gather and all broadcast of weight update values
+        wgt+=2*(self.GetWeightCount()*PCOL) + 2*(self.GetWeightCount()*PROW)
+        #actually updating weights requires another MAC
+        wgt+=self.GetWeightCount()
+        
+        return (fwd,bck,wgt)
+
     def GetHSystolicBW(self):
         bw=0
         #incoming input value to buffer
@@ -189,8 +240,9 @@ class HWConv(Operator):
         return bw
 
 class CKConv(Operator):
-    def __init__(self,id,h,w,r,s,c,k):
+    def __init__(self,id,h,w,r,s,c,k,stationary):
         super(CKConv,self).__init__(ID=id,H=h,W=w,R=r,S=s,C=c,K=k)
+        self.stationary=stationary
     def GetInputActCount(self):
         count=0
         count += (self.H) * (self.W) * math.ceil(self.C/PCOL)
@@ -210,77 +262,139 @@ class CKConv(Operator):
     def GetWeightCount(self):
         return self.R * self.S * math.ceil(self.K/PROW) * math.ceil(self.C/PCOL)
     
-    def GetInputActAccesses(self):
-        acc=0
-        #we read the input activations all once per weight (weight stationary) in the forward pass to calculate output
-        acc+= self.GetInputActCount() * self.R * self.S * math.ceil(self.K/PROW)
-        #we read the input activations once per output gradient to calculate weight updates (output gradient stationary)
-        acc += self.GetInputActCount() * self.H * self.W * math.ceil(self.C/PROW)
-        return acc
-    
-    def GetOutputActAccesses(self):
-        acc=0
-        #output activations are written to with forward pass results and accumulated for each operation on input activations
-        acc+=self.GetInputActCount() * self.R * self.S * math.ceil(self.K/PROW)
-        return acc
-    
-    def GetInputGradAccesses(self):
-        acc=0
-        #input gradients are read in the backward pass to produce output gradients
-        acc+= self.GetInputGradCount() * self.R * self.S * math.ceil(self.C/PCOL)
-        return acc
-    
-    def GetOutputGradAccesses(self):
-        acc=0
-        #output gradients are written to in the backward pass to produce partial gradient for each K
-        acc+=self.GetInputGradCount() * (self.R * self.S * math.ceil(self.C/PCOL))
-        #output gradients are read from to calculate weight update values (gradient stationary so once each)
-        acc+=self.GetOutputGradCount()
-        #output gradients are the accumulated in the K dimension
-        acc+=self.GetOutputGradCount() * math.ceil(self.K/PROW)
-        return acc
+    def GetActAccesses(self):
+        fwd=0
+        bck=0
+        wgt=0
+        #-----------------------
+        #forward
+        if self.stationary==WS:
+            #weight stationary we read every input activation once per every weight
+            #and for each of these we write to the output activation
+            fwd+=2*(self.GetWeightCount()*self.H * self.W)
+        else:
+            #if we are activaiton stationary then we read every activation once
+            #and write each output once for every calculation
+            fwd+=self.GetInputActCount() + (self.GetWeightCount()*self.H *self.W)
+        #-----------------------
+        #backward
+        #gradients and weights only
+        #-----------------------
+        #weight update
+        if self.stationary==WS:
+            #not activation stationary means for every gradient we multiply it by (RxS) input activation values
+            wgt+=self.GetInputGradCount()*(self.R*self.S)
+        else:
+            #if activation is stationary then they are all read once
+            wgt+=self.GetInputActCount()
+            
+        return(fwd,bck,wgt)
+    def GetGradAccesses(self):
+        fwd=0
+        bck=0
+        wgt=0
+        #-----------------------
+        #forward
+        #activations and weights only
+        #-----------------------
+        #backward
+        if self.stationary==WS:
+            #if weight stationary, every gradient is multiplied by 1weight kernel
+            #and each time we write to an output
+            bck+=2*(math.ceil(self.getWeightCount())/(math.ceil(self.K/PCOL))*self.GetInputGradientCount())
+        else:
+            #if not weight stationary, then we read each input once
+            bck+=self.GetInputGradientCount()
+        #-----------------------
+        #weight update
+        if self.stationary==WS:
+            #if not activation stationary, then each gradient is read once
+            self.GetInputGradientCount()
+        else:
+            #if activation stationary, each gradient read (RxS) times per activation
+            wgt+=self.R*self.S*self.GetInputActivationCount()
+            
+        return(fwd,bck,wgt)
     
     def GetWeightAccesses(self):
-        acc=0
-        #read weights once each in forward pass (weight stationary)
-        acc+=self.GetWeightCount()
-        #read weights once each in backward pass (weight stationary)
-        acc+=self.GetWeightCount()
-        #RMW to weights for updates
-        acc+=2*self.GetWeightCount()
-        return acc
-    def GetForwardMAC(self):
-        mac=0
-        #every local weight is multiplied by input activations
-        mac += self.GetInputActCount() * self.R * self.S * math.ceil(self.K/PROW)
-        return mac
-    def GetBackwardMAC(self):
-        mac=0
-        #calculate per K output gradients
-        mac += self.GetInputGradCount() * (self.R * self.S * math.ceil(self.C/PCOL))
-        #calculate weight update values
-        mac+=self.GetInputActCount() * self.GetOutputGradCount()/math.ceil(self.C/PCOL)
-        return mac
+        fwd=0
+        bck=0
+        wgt=0
+        #-----------------------
+        #forward
+        #forward
+        if self.stationary==WS:
+            #if weight stationary, each read once
+            fwd+=self.GetWeightCount()
+        else:
+            #if activation stationary each is read once per input activation calc
+            fwd+=(self.GetWeightCount()* self.H* self.W)
+            
+        #-----------------------
+        #backward
+        if self.stationary==WS:
+            #if weight stationary, each read once
+            bck+=self.GetWeightCount()
+        else:
+            #if activation stationary a kernel is read once per input gradient
+            bck+=math.ceil(self.GetWeightCount())/(math.ceil(self.K/PCOL))*self.GetInputGradCount()
+        #-----------------------
+        #weight update
+        wgt+=self.GetWeightCount()
+        
+        return(fwd,bck,wgt)
     
-    def GetForwardCycles(self):
-        cycles=0
-        #cycles for forward PE
-        cycles += self.GetForwardMAC()
-        #cycles for accum in K dimension
-        cycles += PROW * self.GetOutputActCount()
-        #TODO SKIP CONNECTIONS any incoming activations from a different core we need to rotate incoming matrix to match
-        return cycles
-    def GetBackwardCycles(self):
-        cycles=0
-        #one to all column broadcast to split out in C
-        cycles += self.GetInputGradCount()
-        #backward pass MAC
-        cycles +=self.GetBackwardMAC()
-        #cycles to update local weight values
-        cycles +=self.GetWeightCount()
-        #cycles for accum in K dimension
-        cycles += PROW * self.GetOutputActCount()
-        return cycles
+    def GetMAC(self):
+        fwd=0
+        bck=0
+        wgt=0
+
+        #--------------------
+        #forward
+        #forward pass is every weight with HxW activations
+        fwd+=(self.GetWeightCount()* self.H * self.W)
+        #--------------------
+        #backward
+        #backward pass is every gradient with one weight kernel
+        bck+=self.GetInputGradCount() * math.ceil(self.GetWeightCount())/(math.ceil(self.K/PCOL))
+        #--------------------
+        #weight update
+        #each input is multiplied with RxS gradient vals
+        wgt+=self.GetInputGradCount() * (self.R * self.S)        
+
+        return(fwd,bck,wgt)        
+    def GetCycles(self):
+        fwd=0
+        bck=0
+        wgt=0
+        #-----------------------
+        #forward
+        #MAC cycles
+        fwd+=(self.GetWeightCount()*self.H * self.W)
+        #Accumulate in C dimension along diagonals
+        #to transmit this takes #rows * output size
+        #assume that additions happen pipelined with reception
+        fwd+=PROW*self.GetOutputActCount()
+        #-----------------------
+        #backward
+        #one to all column broadcast cycles
+        bck+=self.GetInputGradCount()
+        #MAC
+        bck+=self.GetInputGradCount() * math.ceil(self.GetWeightCount())/(math.ceil(self.K/PCOL))
+        #local accumulation in K dimension of per weight gradients
+        bck += math.ceil(self.K/PCOL)*self.GetOutputGradCount()
+        #further accumulation in K dimension of per weight gradients done systolically
+        bck += PCOL * self.GetOutputGradCount()
+        #-----------------------
+        #weight update
+        #MAC cycles
+        wgt+=self.GetInputGradCount() * (self.R * self.S)
+        #actually update weights
+        wgt+=self.GetWeightCount()
+        
+        return(fwd,bck,wgt)        
+
+    #TODO BW
     def GetHSystolicBW(self):
         bw=0
         #accumulation in backward pass
@@ -422,79 +536,209 @@ class Batch(Operator):
     def __init__(self,id,h,w,c,bs,blockType):
         super(Batch,self).__init__(ID=id,H=h,W=w,C=c,BS=bs)
         self.blockType=blockType
-    def GetWeightCount(self):
-        #Bach Norm Doesn't Have Weights
-        #but we will consider the metadata to be 'weights'
-        #we have to save a mean, variance, beta and gamma for each channel
-        #per batch size
-        return 4*self.C
     def GetInputActCount(self):
         count=0
-        if self.blockType=='HW':
-            count += match.ceil(self.H/PROW) * math.ceil(self.W/PCOL) * self.C * self.BS
+        if self.blockType==HW:
+            count += math.ceil(self.H/PROW) * math.ceil(self.W/PCOL) * self.C * self.BS
         else:
             count += self.H * self.W * math.ceil(self.C/PROW) * self.BS
         return count
             
     def GetOutputActCount(self):
         count=0
-        if self.blockType=='HW':
-            count += match.ceil(self.H/PROW) * math.ceil(self.W/PCOL) * self.K * self.BS
+        if self.blockType==HW:
+            count += math.ceil(self.H/PROW) * math.ceil(self.W/PCOL) * self.C * self.BS
         else:
-            count += self.H * self.W * math.ceil(self.K/PROW) * self.BS
+            count += self.H * self.W * math.ceil(self.C/PROW) * self.BS
         return count
     
     def GetOutputGradCount(self):
         count=0
-        if self.blockType=='HW':
-            count += match.ceil(self.H/PROW) * math.ceil(self.W/PCOL) * self.C * self.BS
+        if self.blockType==HW:
+            count += math.ceil(self.H/PROW) * math.ceil(self.W/PCOL) * self.C * self.BS
         else:
             count += self.H * self.W * math.ceil(self.C/PROW) * self.BS
         return count
 
     def GetInputGradCount(self):
         count=0
-        if self.blockType=='HW':
-            count += match.ceil(self.H/PROW) * math.ceil(self.W/PCOL) * self.K * self.BS
+        if self.blockType==HW:
+            count += math.ceil(self.H/PROW) * math.ceil(self.W/PCOL) * self.C * self.BS
         else:
-            count += self.H * self.W * math.ceil(self.K/PROW) * self.BS        
-        return count    
-     #accesses for power and cycles
-    def GetInputActAccesses(self):
-        acc=0
-        #forward pass each in read once to get the mean
-        acc+=self.GetInputActCount()
-        #then read again on output to compute variance
-        #and to do scale ops on (all at once)
-        acc+=self.GetInputActCount()
-        #These then get read again in the backward pass for gradient calc
-        return acc
-    def GetOutputActAccesses(self):
-        #output activations are written to once in the forward pass when computed
-        acc+=self.GetOutputActCount()
-        pass
-    def GetInputGradAccesses(self):
-        #these are read in the backward pass during gradient calculations
-        pass
-    def GetOutputGradAccesses(self):
-        #these are written to once calculated
-        acc+=self.GetOutputGradCount()
-        return acc
+            count += self.H * self.W * math.ceil(self.C/PROW) * self.BS        
+        return count
+
+    def GetWeightCount(self):
+        #Bach Norm Doesn't Have Weights
+        #but we will consider the metadata to be 'weights'
+        #we have to save a mean, variance, beta and gamma for each channel
+        #per batch size
+        return 4*self.C
+    
+    #accesses for power and cycles
+    def GetActAccesses(self):
+        fwd=0
+        bck=0
+        wgt=0
+        #-------------------------------------
+        #forward pass
+        #-read in and update mean, then store
+        fwd+=self.GetInputActCount()
+        #-read again on output and compute variance
+        #-then do scale ops in place
+        fwd+=self.GetInputActCount()
+        #-write to output
+        fwd+=self.GetOutputActCount()
+        
+        #-------------------------------------
+        #back prop
+        #this is stored from the forward pass
+        #mu = 1./N*np.sum(h, axis = 0)
+        #var = 1./N*np.sum((h-mu)**2, axis = 0)
+        
+        #this requires reading all gradients (no activations)
+        #dbeta = np.sum(dy, axis=0)
+        
+        #this requires summations over entire back in H,W,C dimension, resulting in 1x1xC
+        #so every input will be read once
+        bck+=self.GetInputActCount()
+        #dgamma = np.sum((h - mu) * (var + eps)**(-1. / 2.) * dy, axis=0)
+        
+        #another summation that requires both gradient and input activation
+        #cant do on the same read because you need the value and the summation
+        bck+=self.GetInputActCount()
+        
+        #dh = (1. / N) * gamma * (var + eps)**(-1. / 2.) * (N * dy - np.sum(dy, axis=0)
+        #    - (h - mu) * (var + eps)**(-1.0) * np.sum(dy * (h - mu), axis=0))
+        
+        #-------------------------------------
+        #weight update
+        #no real weight updates for batch norm,but we do need to keep       
+        #running averages of mean and variance. so:
+        wgt+=2*self.GetInputActCount()
+        
+        #-------------------------------------
+        return(fwd,bck,wgt)
+    
+    def GetGradAccesses():
+        fwd=0
+        bck=0
+        wgt=0
+        #-------------------------------------
+        #forward pass
+        #no gradients in forward pass
+        
+        #-------------------------------------
+        #backward pass
+        #these are stored from forward
+        #mu = 1./N*np.sum(h, axis = 0)
+        #var = 1./N*np.sum((h-mu)**2, axis = 0)
+        
+        #summation in C,H,W to produce 1x1xC beta
+        #dbeta = np.sum(dy, axis=0)
+        bck+=self.GetInputGradCount()
+        
+        #assume we use the same dy in the gamma equation here
+        #dgamma = np.sum((h - mu) * (var + eps)**(-1. / 2.) * dy, axis=0)
+        
+        #will need dy again here, as we have to calculate dbeta first
+        bck+=self.GetInputGradCount()       
+        #dh = (1. / N) * gamma * (var + eps)**(-1. / 2.) * (N * dy - np.sum(dy, axis=0)
+        #    - (h - mu) * (var + eps)**(-1.0) * np.sum(dy * (h - mu), axis=0))
+        #have to write result
+        bck+=self.GetOutputGradCount()
+        #-------------------------------------
+        
+        
+        #weight update
+        #no real weight updates but we do need to update beta and gamma
+        wgt+=2*self.GetInputGradCount()
+        
+        return (fwd,bck,wgt)
+    
     def GetWeightAccesses(self):
         #update mean every computation in forward pass
         #read mean and variance every computation in backward pass
-        pass
+        fwd=0
+        bck=0
+        wgt=0
+        #on the forward pass we update the mean and variance for every input value
+        fwd+=2*self.GetInputActCount()
+        
+        #on the backward pass we read beta and gamma for every input grad
+        bck+=2*self.C
+        
+        #which we will call the weight updates here
+        wgt+=2*self.GetInputGradCount()
+
+        return (fwd,bck,wgt)
+    
     #MAC for power and cycles
-    def GetForwardMAC(self):
-        pass
-    def GetBackwardMAC(self):
-        pass
-    #cycles
-    def GetForwardCycles(self):
-        pass
-    def GetBackwardCycles(self):
-        pass
-    #BW
+    def GetMAC(self):
+        fwd=0
+        bck=0
+        wgt=0
+        #--------------------
+        #forward pass we have one MAC per input value to scale it and produce output
+        fwd+=self.GetInputActCount()
+        #we also have a multiple for the mean for every channel
+        fwd+=self.C
+
+        #--------------------        
+        #backward pass
+        #three multiplication operations
+        #dh = (1. / N) * gamma * (var + eps)**(-1. / 2.) *
+        bck+=3*self.GetInputActCount()
+
+        #then another multiply
+        bck+=self.GetInputActCount()
+        #(N * dy - np.sum(dy, axis=0)
+
+        #three more multiplications, and then another in summation eq
+        back+=self.GetInputActCount()
+        back+=self.GetInputActCount()
+        #- (h - mu) * (var + eps)**(-1.0) *
+        #np.sum(dy * (h - mu), axis=0))
+
+        
+        #--------------------        
+        #wgt updates
+        #gamma requires three multiply operations per value
+        #dgamma = np.sum((h - mu) * (var + eps)**(-1. / 2.) * dy, axis=0)
+        wgt+=3*self.GetInputActCount()
+        
+        return (fwd,bck,wgt)
+
+    
+    def GetCycles(self):
+        fwd=0
+        bck=0
+        wgt=0
+
+        #---------------
+        #forward pass
+        #mean requires an addition for every incoming activation, then one multiply op     
+        fwd+=self.GetInputActCount()+1
+        #variance requires a subtraction and a square (mult) for each incoming activation within summation, then one multiply op
+        #var = 1./N*np.sum((h-mu)**2, axis = 0)
+        fwd+=(3*self.GetInputActCount())+1
+        
+        #---------------
+        #backward pass
+        #div,mult,mult,add,sqrt(12?),mult,mult,subtract,dbeta(counted in weight),subtract,substract,multiply,add,sqrt,add,mult,sub
+        bck+=self.GetInputGradCount()*(2+1+1+1+12+1+1+1+1+1+1+1+12+1+1+1)
+        
+        #---------------
+        #weight update
+        #dbeta requires a summation
+        wgt+=self.GetInputGradCount()
+        #dgamma requires subtraction,multiplications,sqrt(12?) is reused, and another multiplication
+        #all within a summation per input 
+        wgt+=self.GetInputGradCount()*(1+1+1+1)
+
+        return (fwd,bck,wgt)
+    
+    #BW TODO
     def GetHSystolicBW(self):
         pass
     def GetVSystolicBW(self):
@@ -516,6 +760,7 @@ class Network(object):
         network = tree.getroot()
         self.name = network.tag #name is tag of high level network object
         self.precision = float(network.find('precision').text)
+        self.stationary = int(network.find('stationary').text)
 
         #read in all the operator objects. create the correct sub class based on type
         #add the ID to the dict and also append to the array in incoming order
@@ -529,7 +774,7 @@ class Network(object):
                 r=int(o.findall('R')[0].text)
                 s=int(o.findall('S')[0].text)
                 k=int(o.findall('K')[0].text)
-                newOp = HWConv(opID,h,w,r,s,c,k)
+                newOp = HWConv(opID,h,w,r,s,c,k,self.stationary)
                 self.ops[opID]=newOp
                 self.opIDs.append(opID)
             elif type == 'CKConv':
@@ -539,7 +784,7 @@ class Network(object):
                 s=int(o.findall('S')[0].text)
                 c=int(o.findall('C')[0].text)
                 k=int(o.findall('K')[0].text)
-                newOp = CKConv(opID,h,w,r,s,c,k)
+                newOp = CKConv(opID,h,w,r,s,c,k,self.stationary)
                 self.ops[opID]=newOp
                 self.opIDs.append(opID)
             elif type == 'FC':
@@ -585,15 +830,16 @@ class Network(object):
                         COpID=opID+'_block_'+str(x)+'_Cnv_'+str(idx)
                         BOpID=opID+'_block_'+str(x)+'_Bn_'+str(idx)
                         if type == 'ResHW':
-                            newConv=HWConv(COpID,h,w,c,r[idx],s[idx],k[idx])
+                            newConv=HWConv(COpID,h,w,r[idx],s[idx],c,k[idx],self.stationary)
+                            newBatch = Batch(BOpID,h,w,c,batchSize,HW)
                         else: #CK only other type
-                            newConv=CKConv(COpID,h,w,c,r[idx],s[idx],k[idx])
+                            newConv=CKConv(COpID,h,w,r[idx],s[idx],c,k[idx],self.stationary)
+                            newBatch = Batch(BOpID,h,w,c,batchSize,CK)
                       
                         #create a convolution operator and add it
                         self.ops[COpID]=newConv
                         self.opIDs.append(COpID)
                         #create a batch norm operator and add it
-                        newBatch = Batch(BOpID,h,w,c,batchSize)
                         self.ops[BOpID]=newBatch
                         self.opIDs.append(BOpID)
             else:
@@ -655,7 +901,7 @@ class Network(object):
                 mem.append(self.ops[oid].GetWeightCount() * self.precision * MBCONVERSION)
         else:
             self.ops[self.opIDs[index]].PrintInfo()
-            mem.append(self.ops[oid].GetWeightCount()*self.precision * MBCONVERSION)
+            mem.append(self.ops[self.opIDs[index]].GetWeightCount()*self.precision * MBCONVERSION)
         return mem
 
     def GetPEMem(self,index=None):
@@ -668,98 +914,111 @@ class Network(object):
         return mem
     
     #accesses for power and cycles
-    def GetPEInputActAccesses(self,index=None):
-        acc=[]
-        if index==None:            
-            for oid in self.opIDs:
-                acc.append(self.ops[oid].GetInputActAccesses())
-        else:
-            self.ops[self.opIDs[index]].PrintInfo()
-            acc.append(self.ops[oid].GetInputActAccesses())
-        return acc
     
-    def GetPEOutputActAccesses(self,index=None):
-        acc=[]
+    #TODO these could all call the same unpacking function and just
+    #provide a different function pointer to reduce code bloat
+    
+    def GetPEActAccesses(self,index=None):
+        fwd=[]
+        bck=[]
+        wgt=[]
         if index==None:            
             for oid in self.opIDs:
-                acc.append(self.ops[oid].GetOutputActAccesses())
+                (f,b,w)=self.ops[oid].GetActAccesses()
+                fwd.append(f)
+                bck.append(b)
+                wgt.append(w)
+            else:
+                self.ops[self.opIDs[index]].PrintInfo()
+                (f,b,w)=self.ops[oid].GetActAccesses()
+                fwd.append(f)
+                bck.append(b)
+                wgt.append(w)            
+        return (fwd,bck,wgt)
+    
+    def GetPEGradAccesses(self,index=None):
+        fwd=[]
+        bck=[]
+        wgt=[]
+        if index==None:            
+            for oid in self.opIDs:
+                (f,b,w)=self.ops[oid].GetGradAccesses()
+                fwd.append(f)
+                bck.append(b)
+                wgt.append(w) 
         else:
             self.ops[self.opIDs[index]].PrintInfo()
-            acc.append(self.ops[oid].GetOutputActAccesses())
-        return acc
+            (f,b,w)=self.ops[oid].GetGradAccesses()
+            fwd.append(f)
+            bck.append(b)
+            wgt.append(w) 
 
-    def GetPEInputGradAccesses(self,index=None):
-        acc=[]
-        if index==None:            
-            for oid in self.opIDs:
-                acc.append(self.ops[oid].GetInputGradAccesses())
-        else:
-            self.ops[self.opIDs[index]].PrintInfo()
-            acc.append(self.ops[oid].GetInputGradAccesses())
-        return acc
-    
-    def GetPEOutputGradAccesses(self,index=None):
-        acc=[]
-        if index==None:            
-            for oid in self.opIDs:
-                acc.append(self.ops[oid].GetOutputGradAccesses())
-        else:
-            self.ops[self.opIDs[index]].PrintInfo()
-            acc.append(self.ops[oid].GetOutputGradAccesses())
-        return acc
+        return(fwd,bck,wgt)
     
     def GetPEWeightAccesses(self,index=None):
-        acc=[]
+        fwd=[]
+        bck=[]
+        wgt=[]
         if index==None:            
             for oid in self.opIDs:
-                acc.append(self.ops[oid].GetWeightAccesses())
+                (f,b,w)=self.ops[oid].GetWeightAccesses()
+                fwd.append(f)
+                bck.append(b)
+                wgt.append(w)
         else:
             self.ops[self.opIDs[index]].PrintInfo()
-            acc.append(self.ops[oid].GetWeightAccesses())
-        return acc
+            (f,b,w)=self.ops[oid].GetWeightAccesses()
+            fwd.append(f)
+            bck.append(b)
+            wgt.append(w)
+
+        return (fwd,bck,wgt)
     
     #MAC for power and cycles
-    def GetPEForwardMAC(self,index=None):
-        mac=[]
+    def GetPEMAC(self,index=None):
+        fwd=[]
+        bck=[]
+        wgt=[]
         if index==None:            
             for oid in self.opIDs:
-                mac.append(self.ops[oid].GetForwardMAC())
+                (f,b,w)=self.ops[oid].GetMAC()
+                fwd.append(f)
+                bck.append(b)
+                wgt.append(w)
         else:
             self.ops[self.opIDs[index]].PrintInfo()
-            mac.append(self.ops[oid].GetForwardMAC())
-        return mac
-    
-    def GetPEBackwardMAC(self,index=None):
-        mac=[]
-        if index==None:            
-            for oid in self.opIDs:
-                mac.append(self.ops[oid].GetBackwardMAC())
-        else:
-            self.ops[self.opIDs[index]].PrintInfo()
-            mac.append(self.ops[oid].GetBackwardMAC())
-        return mac
-    
-    #cycles
-    def GetPEForwardCycles(self,index=None):
-        cyc=[]
-        if index==None:            
-            for oid in self.opIDs:
-                cyc.append(self.ops[oid].GetForwardCycles())
-        else:
-            self.ops[self.opIDs[index]].PrintInfo()
-            cyc.append(self.ops[oid].GetForwardCycles())
-        return cyc
+            (f,b,w)=self.ops[oid].GetMAC()
+            fwd.append(f)
+            bck.append(b)
+            wgt.append(w)
 
-    def GetPEBackwardCycles(self,index=None):
-        cyc=[]
+        return (fwd,bck,wgt)
+
+    #cycles
+    def GetPECycles(self,index=None):
+        fwd=[]
+        bck=[]
+        wgt=[]
+        
         if index==None:            
             for oid in self.opIDs:
-                cyc.append(self.ops[oid].GetBackwardCycles())
+                (f,b,w)=self.ops[oid].GetCycles()
+                fwd.append(f)
+                bck.append(b)
+                wgt.append(w)
         else:
             self.ops[self.opIDs[index]].PrintInfo()
-            cyc.append(self.ops[oid].GetBackwardCycles())
-        return cyc
+            (f,b,w)=self.ops[oid].GetCycles()
+            fwd.append(f)
+            bck.append(b)
+            wgt.append(w)            
+
+        return (fwd,bck,wgt)
+
+
     def GetPEHSystolicBW(self,index=None):
+        #TODO
+        pass
         bw=[]
         if index==None:            
             for oid in self.opIDs:
@@ -769,6 +1028,8 @@ class Network(object):
             bw.append(self.ops[oid].GetHSystolicBW()*self.precision* MBCONVERSION)
         return bw
     def GetPEVSystolicBW(self,index=None):
+        #TODO
+        pass
         bw=[]
         if index==None:            
             for oid in self.opIDs:
@@ -778,6 +1039,8 @@ class Network(object):
             bw.append(self.ops[oid].GetVSystolicBW()*self.precision* MBCONVERSION)
         return bw
     def GetPEHBroadcastBW(self,index=None):
+        #TODO
+        pass
         bw=[]
         if index==None:            
             for oid in self.opIDs:
@@ -787,6 +1050,8 @@ class Network(object):
             bw.append(self.ops[oid].GetHBroadcastBW()*self.precision* MBCONVERSION)
         return bw
     def GetPEVBroadcastBW(self,index=None):
+        #TODO
+        pass
         bw=[]
         if index==None:            
             for oid in self.opIDs:
@@ -798,14 +1063,14 @@ class Network(object):
 
     #function to plot two lists, x being a list of operator IDs
     #x axis is assumed to be the operator IDs
-    def PlotOps(self,title,ylabel,y):
+    def PlotOps(self,title,labels,ylabel,y):
+        #labels is probably self.opids, but you might want only a portion
         plt.xlabel('OP ID')
         plt.ylabel(ylabel)
         plt.title(title)
         x=[]
-        for i in range(0,len(self.opIDs)):
+        for i in range(0,len(labels)):
             x.append(i)
-        labels=self.opIDs
         plt.bar(x,y,align='center')
         plt.xticks(x,labels,rotation=90)
         plt.show()

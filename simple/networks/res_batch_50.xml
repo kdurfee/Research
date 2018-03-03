@@ -2,6 +2,7 @@
 
 <network name = "BatchRes50">
   <precision>16</precision>
+  <stationary>1</stationary>
   <!--Layer 0 -->
   <Operator>
     <ID>HW_0</ID>
@@ -36,4 +37,67 @@
     <S>1</S>
     <K>256</K>
   </Operator>
+  <!--Residual BLock 2 -->
+  <Operator>
+    <ID>RES_2</ID>
+    <type>ResCK</type>
+    <batchSize>100</batchSize>
+    <multiple>4</multiple>
+    <inH>56</inH>
+    <inW>56</inW>
+    <inC>256</inC>
+    <outH>28</outH>
+    <outW>28</outW>
+    <R>1</R>
+    <S>1</S>
+    <K>128</K>
+    <R>3</R>
+    <S>3</S>
+    <K>128</K>    
+    <R>1</R>
+    <S>1</S>
+    <K>512</K>
+  </Operator>
+  <!--Residual BLock 3 -->
+  <Operator>
+    <ID>RES_3</ID>
+    <type>ResCK</type>
+    <batchSize>100</batchSize>
+    <multiple>6</multiple>
+    <inH>28</inH>
+    <inW>28</inW>
+    <inC>512</inC>
+    <outH>14</outH>
+    <outW>14</outW>
+    <R>1</R>
+    <S>1</S>
+    <K>256</K>
+    <R>3</R>
+    <S>3</S>
+    <K>256</K>    
+    <R>1</R>
+    <S>1</S>
+    <K>1024</K>
+  </Operator>
+  <!--Residual BLock 4 -->
+  <Operator>
+    <ID>RES_4</ID>
+    <type>ResCK</type>
+    <batchSize>100</batchSize>
+    <multiple>3</multiple>
+    <inH>14</inH>
+    <inW>14</inW>
+    <inC>1024</inC>
+    <outH>7</outH>
+    <outW>7</outW>
+    <R>1</R>
+    <S>1</S>
+    <K>512</K>
+    <R>3</R>
+    <S>3</S>
+    <K>512</K>    
+    <R>1</R>
+    <S>1</S>
+    <K>2048</K>
+  </Operator>   
 </network>
