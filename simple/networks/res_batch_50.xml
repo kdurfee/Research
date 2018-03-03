@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+
+<network name = "BatchRes50">
+  <precision>16</precision>
+  <!--Layer 0 -->
+  <Operator>
+    <ID>HW_0</ID>
+    <type>HWConv</type>
+    <H>224</H>
+    <W>224</W>    
+    <C>3</C>
+    <R>7</R>
+    <S>7</S>
+    <K>64</K>    
+  </Operator>
+  <!--Max pool stride 2-->
+  <!--So output is 56x56 -->
+  <!--Residual BLock 1 -->
+  <Operator>
+    <ID>RES_1</ID>
+    <type>ResHW</type>
+    <batchSize>100</batchSize>
+    <multiple>3</multiple>
+    <inH>56</inH>
+    <inW>56</inW>
+    <inC>64</inC>
+    <outH>56</outH>
+    <outW>56</outW>
+    <R>1</R>
+    <S>1</S>
+    <K>64</K>
+    <R>3</R>
+    <S>3</S>
+    <K>64</K>    
+    <R>1</R>
+    <S>1</S>
+    <K>256</K>
+  </Operator>
+</network>
