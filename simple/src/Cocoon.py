@@ -6,8 +6,8 @@ from collections import defaultdict
 import math
 #Global value for conversions from bits to MB
 MBCONVERSION = .000000125
-PROW=8
-PCOL=8
+PROW=1
+PCOL=1
 #easy enum for weight stationary or activation stationay
 WS=1
 AS=2
@@ -129,7 +129,7 @@ class HWConv(Operator):
         if self.stationary==WS:
             #if weight stationary, every gradient is multiplied by 1 full weight kernel
             #and each time we write to an output
-            bck+=2*(math.ceil(self.getWeightCount()/self.K)*self.GetInputGradientCount())
+            bck+=2*(math.ceil(self.GetWeightCount()/self.K)*self.GetInputGradientCount())
         else:
             #if not weight stationary, then we read each input once
             bck+=self.GetInputGradientCount()
@@ -301,18 +301,18 @@ class CKConv(Operator):
         if self.stationary==WS:
             #if weight stationary, every gradient is multiplied by 1weight kernel
             #and each time we write to an output
-            bck+=2*(math.ceil(self.getWeightCount())/(math.ceil(self.K/PCOL))*self.GetInputGradientCount())
+            bck+=2*(math.ceil(self.GetWeightCount())/(math.ceil(self.K/PCOL))*self.GetInputGradCount())
         else:
             #if not weight stationary, then we read each input once
-            bck+=self.GetInputGradientCount()
+            bck+=self.GetInputGradCount()
         #-----------------------
         #weight update
         if self.stationary==WS:
             #if not activation stationary, then each gradient is read once
-            self.GetInputGradientCount()
+            self.GetInputGradCount()
         else:
             #if activation stationary, each gradient read (RxS) times per activation
-            wgt+=self.R*self.S*self.GetInputActivationCount()
+            wgt+=self.R*self.S*self.GetInputActCount()
             
         return(fwd,bck,wgt)
     
@@ -540,8 +540,8 @@ class Batch(Operator):
         count=0
         if self.blockType==HW:
             count += math.ceil(self.H/PROW) * math.ceil(self.W/PCOL) * self.C * self.BS
-        else:
-            count += self.H * self.W * math.ceil(self.C/PROW) * self.BS
+        else: #if CK, then block in W and C
+            count += self.H * math.ceil(self.W/PCOL) * math.ceil(self.C/PROW) * self.BS
         return count
             
     def GetOutputActCount(self):
@@ -549,7 +549,7 @@ class Batch(Operator):
         if self.blockType==HW:
             count += math.ceil(self.H/PROW) * math.ceil(self.W/PCOL) * self.C * self.BS
         else:
-            count += self.H * self.W * math.ceil(self.C/PROW) * self.BS
+            count += self.H * math.ceil(self.W/PCOL) * math.ceil(self.C/PROW) * self.BS
         return count
     
     def GetOutputGradCount(self):
@@ -557,7 +557,7 @@ class Batch(Operator):
         if self.blockType==HW:
             count += math.ceil(self.H/PROW) * math.ceil(self.W/PCOL) * self.C * self.BS
         else:
-            count += self.H * self.W * math.ceil(self.C/PROW) * self.BS
+            count += self.H * math.ceil(self.W/PCOL) * math.ceil(self.C/PROW) * self.BS
         return count
 
     def GetInputGradCount(self):
@@ -565,7 +565,7 @@ class Batch(Operator):
         if self.blockType==HW:
             count += math.ceil(self.H/PROW) * math.ceil(self.W/PCOL) * self.C * self.BS
         else:
-            count += self.H * self.W * math.ceil(self.C/PROW) * self.BS        
+            count += self.H * math.ceil(self.W/PCOL) * math.ceil(self.C/PROW) * self.BS        
         return count
 
     def GetWeightCount(self):
@@ -573,7 +573,7 @@ class Batch(Operator):
         #but we will consider the metadata to be 'weights'
         #we have to save a mean, variance, beta and gamma for each channel
         #per batch size
-        return 4*self.C
+        return 4*math.ceil(self.C/PROW)
     
     #accesses for power and cycles
     def GetActAccesses(self):
@@ -620,7 +620,7 @@ class Batch(Operator):
         #-------------------------------------
         return(fwd,bck,wgt)
     
-    def GetGradAccesses():
+    def GetGradAccesses(self):
         fwd=0
         bck=0
         wgt=0
@@ -722,12 +722,23 @@ class Batch(Operator):
         #variance requires a subtraction and a square (mult) for each incoming activation within summation, then one multiply op
         #var = 1./N*np.sum((h-mu)**2, axis = 0)
         fwd+=(3*self.GetInputActCount())+1
+        #HW needs to do all gather for values in HW dimension to get summations in C
+        if self.blockType==HW:
+            fwd+=self.GetInputGradCount() * ((PCOL) + (PROW))
+        else:#CK only needs to do this in one dimension (the W dimension)
+            fwd+=self.GetInputGradCount()*(PCOL)
+                
         
         #---------------
         #backward pass
         #div,mult,mult,add,sqrt(12?),mult,mult,subtract,dbeta(counted in weight),subtract,substract,multiply,add,sqrt,add,mult,sub
         bck+=self.GetInputGradCount()*(2+1+1+1+12+1+1+1+1+1+1+1+12+1+1+1)
-        
+        #HW needs to do all gather for values in HW dimension to get summations in C
+        if self.blockType==HW:
+            bck+=self.GetInputGradCount() * ((PCOL) + (PROW))
+        else:#CK only needs to do this in one dimension (the W dimension)
+            bck+=self.GetInputGradCount()*(PCOL)
+            
         #---------------
         #weight update
         #dbeta requires a summation
@@ -860,7 +871,6 @@ class Network(object):
             for oid in self.opIDs:
                 mem.append(self.ops[oid].GetInputActCount() * self.precision * MBCONVERSION)
         else:
-            self.ops[self.opIDs[index]].PrintInfo()
             mem.append(self.ops[self.opIDs[index]].GetInputActCount()*self.precision * MBCONVERSION)
         return mem
     
@@ -870,7 +880,6 @@ class Network(object):
             for oid in self.opIDs:
                 mem.append(self.ops[oid].GetOutputActCount() * self.precision * MBCONVERSION)
         else:
-            self.ops[self.opIDs[index]].PrintInfo()
             mem.append(self.ops[self.opIDs[index]].GetOutputActCount()*self.precision * MBCONVERSION)
         return mem
 
@@ -880,7 +889,6 @@ class Network(object):
             for oid in self.opIDs:
                 mem.append(self.ops[oid].GetOutputGradCount() * self.precision * MBCONVERSION)
         else:
-            self.ops[self.opIDs[index]].PrintInfo()
             mem.append(self.ops[self.opIDs[index]].GetOutputGradCount()*self.precision * MBCONVERSION)
         return mem
     
@@ -890,7 +898,6 @@ class Network(object):
             for oid in self.opIDs:
                 mem.append(self.ops[oid].GetInputGradCount() * self.precision * MBCONVERSION)
         else:
-            self.ops[self.opIDs[index]].PrintInfo()
             mem.append(self.ops[self.opIDs[index]].GetInputGradCount()*self.precision * MBCONVERSION)
         return mem
     
@@ -900,7 +907,6 @@ class Network(object):
             for oid in self.opIDs:
                 mem.append(self.ops[oid].GetWeightCount() * self.precision * MBCONVERSION)
         else:
-            self.ops[self.opIDs[index]].PrintInfo()
             mem.append(self.ops[self.opIDs[index]].GetWeightCount()*self.precision * MBCONVERSION)
         return mem
 
@@ -928,12 +934,11 @@ class Network(object):
                 fwd.append(f)
                 bck.append(b)
                 wgt.append(w)
-            else:
-                self.ops[self.opIDs[index]].PrintInfo()
-                (f,b,w)=self.ops[oid].GetActAccesses()
-                fwd.append(f)
-                bck.append(b)
-                wgt.append(w)            
+        else:
+            (f,b,w)=self.ops[self.opIDs[index]].GetActAccesses()
+            fwd.append(f)
+            bck.append(b)
+            wgt.append(w)            
         return (fwd,bck,wgt)
     
     def GetPEGradAccesses(self,index=None):
@@ -947,8 +952,7 @@ class Network(object):
                 bck.append(b)
                 wgt.append(w) 
         else:
-            self.ops[self.opIDs[index]].PrintInfo()
-            (f,b,w)=self.ops[oid].GetGradAccesses()
+            (f,b,w)=self.ops[self.opIDs[index]].GetGradAccesses()
             fwd.append(f)
             bck.append(b)
             wgt.append(w) 
@@ -966,8 +970,7 @@ class Network(object):
                 bck.append(b)
                 wgt.append(w)
         else:
-            self.ops[self.opIDs[index]].PrintInfo()
-            (f,b,w)=self.ops[oid].GetWeightAccesses()
+            (f,b,w)=self.ops[self.opIDs[index]].GetWeightAccesses()
             fwd.append(f)
             bck.append(b)
             wgt.append(w)
@@ -986,8 +989,7 @@ class Network(object):
                 bck.append(b)
                 wgt.append(w)
         else:
-            self.ops[self.opIDs[index]].PrintInfo()
-            (f,b,w)=self.ops[oid].GetMAC()
+            (f,b,w)=self.ops[self.opIDs[index]].GetMAC()
             fwd.append(f)
             bck.append(b)
             wgt.append(w)
@@ -1007,8 +1009,7 @@ class Network(object):
                 bck.append(b)
                 wgt.append(w)
         else:
-            self.ops[self.opIDs[index]].PrintInfo()
-            (f,b,w)=self.ops[oid].GetCycles()
+            (f,b,w)=self.ops[self.opIDs[index]].GetCycles()
             fwd.append(f)
             bck.append(b)
             wgt.append(w)            
@@ -1061,6 +1062,28 @@ class Network(object):
             bw.append(self.ops[oid].GetVBroadcastBW()*self.precision* MBCONVERSION)
         return bw        
 
+    #BN layers function very differently from conv layers
+    #so we have these functions to allow for stand alone analysis of one or the other
+    def GetBNIDs(self):
+        index=[]
+        BnIDs=[]
+        for idx,oid in enumerate(self.opIDs):
+            if 'Bn' in oid:
+                BnIDs.append(oid)
+                index.append(idx)
+
+        return (index,BnIDs)
+
+    def GetFiltIDs(self):
+        index=[]
+        FIDs=[]
+        for idx,oid in enumerate(self.opIDs):
+            if 'Bn' not in oid:
+                FIDs.append(oid)
+                index.append(idx)
+
+        return (index,FIDs)
+    
     #function to plot two lists, x being a list of operator IDs
     #x axis is assumed to be the operator IDs
     def PlotOps(self,title,labels,ylabel,y):
