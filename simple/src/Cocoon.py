@@ -70,11 +70,14 @@ class Operator(object):
         pass
     
 class HWConv(Operator):
-    def __init__(self,id,h,w,r,s,c,k,stationary):
+    def __init__(self,id,h,w,r,s,c,k,stationary,skip):
         super(HWConv,self).__init__(ID=id,H=h,W=w,R=r,S=s,C=c,K=k)
         self.stationary=stationary
-    def GetInputActCount(self):
+        self.skip=skip
+    def GetInputActCount(self,internal=0):
         count = math.ceil(self.H/PCOL) * math.ceil(self.W/PROW) * self.C
+        if internal==0:
+            count = count *2
         return count
     def GetOutputActCount(self):
         count = math.ceil(self.H/PCOL) * math.ceil(self.W/PROW) * self.K
@@ -82,8 +85,10 @@ class HWConv(Operator):
     def GetInputGradCount(self):
         count = math.ceil(self.H/PCOL) * math.ceil(self.W/PROW) * self.K
         return count
-    def GetOutputGradCount(self):
+    def GetOutputGradCount(self,internal=0):
         count = math.ceil(self.H/PCOL) * math.ceil(self.W/PROW) * self.C
+        if internal==0:
+            count = count * 2
         return count
     def GetWeightCount(self):
         return (self.R * self.S * self.K * self.C)
@@ -101,7 +106,11 @@ class HWConv(Operator):
         else:
             #if we are activaiton stationary then we read every activation once
             #and write each output once for every calculation
-            fwd+=self.GetInputActCount() + (self.GetWeightCount()*math.ceil(self.H/PCOL) * math.ceil(self.W/PROW))
+            if self.skip:
+                fwd+=self.GetInputActCount(self.skip) + (self.GetWeightCount()*math.ceil(self.H/PCOL) * math.ceil(self.W/PROW))
+                fwd+=self.GetInputActCount() #need to combine the skip inputs with the regular ones elementwise
+            else:
+                fwd += self.GetInputActCount(self.skip) + (self.GetWeightCount()*math.ceil(self.H/PCOL) * math.ceil(self.W/PROW))
         #--------------------
         #backward
         #back pass is between gradients and weights
@@ -113,8 +122,8 @@ class HWConv(Operator):
             wgt+=self.GetInputGradCount()*(self.R*self.S)
         else:
             #if activation is stationary then they are all read once
-            wgt+=self.GetInputActCount()
-            
+            wgt+=self.GetInputActCount(self.skip)
+                
         return (fwd,bck,wgt)
     
     def GetGradAccesses(self):
@@ -129,18 +138,19 @@ class HWConv(Operator):
         if self.stationary==WS:
             #if weight stationary, every gradient is multiplied by 1 full weight kernel
             #and each time we write to an output
-            bck+=2*(math.ceil(self.GetWeightCount()/self.K)*self.GetInputGradientCount())
+            bck+=2*(math.ceil(self.GetWeightCount()/self.K)*self.GetInputGradCount())
         else:
             #if not weight stationary, then we read each input once
-            bck+=self.GetInputGradientCount()
+            bck+=self.GetInputGradCount()
         #--------------------
         #weight update
         if self.stationary==WS:
             #if not activation stationary, then each gradient is read once
-            self.GetInputGradientCount()
+            self.GetInputGradCount()
         else:
             #if activation stationary, each gradient read (RxS) times per activation
-            wgt+=self.R*self.S*self.GetInputActivationCount()
+            wgt+=self.R*self.S*self.GetInputActCount(self.skip)
+                
         return (fwd,bck,wgt)
     
     def GetWeightAccesses(self):
@@ -171,11 +181,9 @@ class HWConv(Operator):
         return (fwd,bck,wgt)
     
     def GetMAC(self):
-        fwd=0
-        bck=0
-        wgt=0
-
-        
+        fwd=(self.GetWeightCount()*math.ceil(self.H/PCOL) * math.ceil(self.W/PROW))
+        bck=self.GetInputGradCount() * math.ceil(self.GetWeightCount()/self.K)
+        wgt=self.GetInputGradCount() * (self.R * self.S)        
         return (fwd,bck,wgt)
     
     def GetCycles(self):
@@ -184,6 +192,9 @@ class HWConv(Operator):
         wgt=0
         #--------------------
         #forward
+        #if skip, elementwise summing of skip inputs
+        if self.skip:
+            fwd+=self.getInputActCount(self.skip)
         #MAC cycles
         fwd+=(self.GetWeightCount()*math.ceil(self.H/PCOL) * math.ceil(self.W/PROW))
         #halo sharing cycles send and recieve overlap (after C reduction)        
@@ -196,8 +207,11 @@ class HWConv(Operator):
         bck += math.ceil(self.H/PCOL)*(self.R-1) + math.ceil(self.W/PROW) * (self.S-1) * self.K * self.C
         #accumulation in K dimension of per weight gradients
         #mean K additions for every output gradient value
-        bck += self.K * self.GetOutputGradCount()
-        
+        if self.skip:
+            bck += self.K * self.GetOutputGradCount()/2
+        else:
+            bck += self.K * self.GetOutputGradCount()
+            
         #--------------------
         #weight update
         #MAC Cycles
@@ -240,12 +254,15 @@ class HWConv(Operator):
         return bw
 
 class CKConv(Operator):
-    def __init__(self,id,h,w,r,s,c,k,stationary):
+    def __init__(self,id,h,w,r,s,c,k,stationary,skip):
         super(CKConv,self).__init__(ID=id,H=h,W=w,R=r,S=s,C=c,K=k)
         self.stationary=stationary
-    def GetInputActCount(self):
+        self.skip=skip
+    def GetInputActCount(self,internal=0):
         count=0
         count += (self.H) * (self.W) * math.ceil(self.C/PCOL)
+        if internal==0:
+            count=2*count
         return count
     def GetOutputActCount(self):
         count=0
@@ -255,9 +272,11 @@ class CKConv(Operator):
         count=0
         count += self.H * self.W * math.ceil(self.K/PROW)
         return count
-    def GetOutputGradCount(self):
+    def GetOutputGradCount(self,internal=0):
         count=0
         count += self.H * self.W * math.ceil(self.C/PCOL)
+        if internal==0:
+            count = 2* count
         return count
     def GetWeightCount(self):
         return self.R * self.S * math.ceil(self.K/PROW) * math.ceil(self.C/PCOL)
@@ -275,8 +294,13 @@ class CKConv(Operator):
         else:
             #if we are activaiton stationary then we read every activation once
             #and write each output once for every calculation
-            fwd+=self.GetInputActCount() + (self.GetWeightCount()*self.H *self.W)
+            if self.skip:
+                fwd+=self.GetInputActCount(self.skip) + (self.GetWeightCount()*self.H *self.W)
+                fwd+=self.GetInputActCount() #need to combine the skip inputs with the other inputs elementwise
+            else:
+                fwd+=self.GetInputActCount(self.skip) + (self.GetWeightCount()*self.H *self.W)
         #-----------------------
+                
         #backward
         #gradients and weights only
         #-----------------------
@@ -286,9 +310,10 @@ class CKConv(Operator):
             wgt+=self.GetInputGradCount()*(self.R*self.S)
         else:
             #if activation is stationary then they are all read once
-            wgt+=self.GetInputActCount()
-            
+            wgt+=self.GetInputActCount(self.skip)
+                
         return(fwd,bck,wgt)
+    
     def GetGradAccesses(self):
         fwd=0
         bck=0
@@ -312,7 +337,7 @@ class CKConv(Operator):
             self.GetInputGradCount()
         else:
             #if activation stationary, each gradient read (RxS) times per activation
-            wgt+=self.R*self.S*self.GetInputActCount()
+            wgt+=self.R*self.S*self.GetInputActCount(self.skip)
             
         return(fwd,bck,wgt)
     
@@ -382,9 +407,9 @@ class CKConv(Operator):
         #MAC
         bck+=self.GetInputGradCount() * math.ceil(self.GetWeightCount())/(math.ceil(self.K/PCOL))
         #local accumulation in K dimension of per weight gradients
-        bck += math.ceil(self.K/PCOL)*self.GetOutputGradCount()
+        bck += math.ceil(self.K/PCOL)*self.GetOutputGradCount(self.skip)
         #further accumulation in K dimension of per weight gradients done systolically
-        bck += PCOL * self.GetOutputGradCount()
+        bck += PCOL * self.GetOutputGradCount(self.skip)
         #-----------------------
         #weight update
         #MAC cycles
@@ -695,8 +720,8 @@ class Batch(Operator):
         #(N * dy - np.sum(dy, axis=0)
 
         #three more multiplications, and then another in summation eq
-        back+=self.GetInputActCount()
-        back+=self.GetInputActCount()
+        bck+=self.GetInputActCount()
+        bck+=self.GetInputActCount()
         #- (h - mu) * (var + eps)**(-1.0) *
         #np.sum(dy * (h - mu), axis=0))
 
@@ -731,7 +756,10 @@ class Batch(Operator):
         
         #---------------
         #backward pass
+        #dh = (1. / N) * gamma * (var + eps)**(-1. / 2.) * (N * dy - np.sum(dy, axis=0)
+        #    - (h - mu) * (var + eps)**(-1.0) * np.sum(dy * (h - mu), axis=0))
         #div,mult,mult,add,sqrt(12?),mult,mult,subtract,dbeta(counted in weight),subtract,substract,multiply,add,sqrt,add,mult,sub
+        #NOTE this assumes that we can do np.sum(dy, axis=0) and np.sum(dy * (h - mu), axis=0)) just once per C and then reuse the value
         bck+=self.GetInputGradCount()*(2+1+1+1+12+1+1+1+1+1+1+1+12+1+1+1)
         #HW needs to do all gather for values in HW dimension to get summations in C
         if self.blockType==HW:
@@ -769,6 +797,7 @@ class Network(object):
     def ParseXMLNetwork(self,filepath):
         tree = ET.parse(filepath)
         network = tree.getroot()
+        firstResFlag=1
         self.name = network.tag #name is tag of high level network object
         self.precision = float(network.find('precision').text)
         self.stationary = int(network.find('stationary').text)
@@ -776,6 +805,7 @@ class Network(object):
         #read in all the operator objects. create the correct sub class based on type
         #add the ID to the dict and also append to the array in incoming order
         for o in network.findall('Operator'):
+            skip=0
             opID = o.find('ID').text
             type = o.find('type').text
             if type == 'HWConv':
@@ -785,7 +815,7 @@ class Network(object):
                 r=int(o.findall('R')[0].text)
                 s=int(o.findall('S')[0].text)
                 k=int(o.findall('K')[0].text)
-                newOp = HWConv(opID,h,w,r,s,c,k,self.stationary)
+                newOp = HWConv(opID,h,w,r,s,c,k,self.stationary,skip)
                 self.ops[opID]=newOp
                 self.opIDs.append(opID)
             elif type == 'CKConv':
@@ -795,7 +825,7 @@ class Network(object):
                 s=int(o.findall('S')[0].text)
                 c=int(o.findall('C')[0].text)
                 k=int(o.findall('K')[0].text)
-                newOp = CKConv(opID,h,w,r,s,c,k,self.stationary)
+                newOp = CKConv(opID,h,w,r,s,c,k,self.stationary,skip)
                 self.ops[opID]=newOp
                 self.opIDs.append(opID)
             elif type == 'FC':
@@ -838,13 +868,21 @@ class Network(object):
                             #C is the K dimension of the previous convolution
                             #still set from previous loop
                             c=newConv.K
+                        if idx==0:#first resnet convolution has incoming skip connection buffer
+                            if firstResFlag: #the very first resnet block doesnt have a skip
+                                skip=0
+                            else:
+                                skip=1
+                        else:
+                            skip=0
+                                    
                         COpID=opID+'_block_'+str(x)+'_Cnv_'+str(idx)
                         BOpID=opID+'_block_'+str(x)+'_Bn_'+str(idx)
                         if type == 'ResHW':
-                            newConv=HWConv(COpID,h,w,r[idx],s[idx],c,k[idx],self.stationary)
+                            newConv=HWConv(COpID,h,w,r[idx],s[idx],c,k[idx],self.stationary,skip)
                             newBatch = Batch(BOpID,h,w,c,batchSize,HW)
                         else: #CK only other type
-                            newConv=CKConv(COpID,h,w,r[idx],s[idx],c,k[idx],self.stationary)
+                            newConv=CKConv(COpID,h,w,r[idx],s[idx],c,k[idx],self.stationary,skip)
                             newBatch = Batch(BOpID,h,w,c,batchSize,CK)
                       
                         #create a convolution operator and add it
