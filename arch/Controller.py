@@ -42,12 +42,19 @@ baseline=ArchLib.Convolve(InAct[0],LayerWeights[0])
 #print ("baseline --------")
 #print (baseline)
 #-------------------------------------------------------------------
-
+#random gradient for backwards pass testing
+gradient = np.random.randint(3,size=baseline.shape)
+base_dact,base_dw = ArchLib.BackConvolve(gradient,InAct[0],LayerWeights[0])
+print("The baseline output gradient is:")
+print(base_dact)
+#------------------------------------------------------------------
 #split that activaiton in the C dimension and load into PEs
 #first row gets C=0,1,2,3 etc
+#split the output grad in the K dimension to match for backward pass
 for i in range(0,4):
     for j in range(0,4):
         C.PEGrid[i,j].SetInAct(0,InAct[0][(i*4)+j,:,:])
+        C.PEGrid[i,j].inGrad[0]=base_dact[(i*4)+j,:,:]
         
 #split the weights in K and C dimension and load into PEs
 for i in range(0,4):

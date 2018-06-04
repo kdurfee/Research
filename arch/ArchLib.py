@@ -39,13 +39,50 @@ def Convolve(act,weights):
                     out[i:i+1,j,k]=result
     #--------end of 3 dim
     return out
-    
+
+def BackConvolve(grad,act,weight):
+    #inputs:
+    #grad: input gradients
+    #act: original input activations
+    #weight: input weights
+    #----------------
+    #outputs:
+    #Gradient with respect to input (act)
+    #Gradient with respect to weights (weight)
+
+    dact,dw = None,None
+    #Hack to make it work with gradient of only one 'channel
+
+    C,H,W=act.shape #NOTE: only one activation at a time (no N param)
+    if grad.ndim==2 and weight.ndim==3:
+        OH,OW=grad.shape
+        C,HH,WW=weight.shape
+    else:
+    K,C,HH,WW = weight.shape
+    K,OH,OW = grad.shape
+
+    dact = np.zeros_like(act)
+    dw = np.zeros_like(weight)
+
+    for i in range(K):
+        for j in range(OH):
+            for k in range(OW):
+                input = act[:,j:j+HH,k:k+WW]
+                grad_curr = grad[i:i+1,j:j+1,k:k+1]
+                dw[i] += input * grad_curr #TODO original sums in N axis ???
+                dact[:,j:j+HH,k:k+WW] += weight[i]*grad_curr
+
+    return dact,dw
+                                
 class PE:
     def __init__(self,x,y):
         self.weights = dict() #dictionary to store layer weights with a kernel lookup
         self.id=(x,y) #store location in PE grid
         self.inAct=dict() #variable for input activations
         self.outAct=dict() #variablef or output activaitons
+        self.inGrad=dict()
+        self.outDAct=dict()
+        self.outDW=dict()
         self.inBuf=None
         self.outBuf=None
 
