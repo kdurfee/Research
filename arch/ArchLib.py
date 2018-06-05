@@ -50,27 +50,44 @@ def BackConvolve(grad,act,weight):
     #Gradient with respect to input (act)
     #Gradient with respect to weights (weight)
 
-    dact,dw = None,None
+    print("incoming activation is ")
+    print(act)
+    print(weight)
+    print(grad)
+    dact = np.zeros_like(act)
+    dw = np.zeros_like(weight)    
     #Hack to make it work with gradient of only one 'channel
 
-    C,H,W=act.shape #NOTE: only one activation at a time (no N param)
-    if grad.ndim==2 and weight.ndim==3:
+
+    if grad.ndim==2 and weight.ndim==2:
+        #this is the distributed case where we are only doing a single 'slice' of the computation
         OH,OW=grad.shape
-        C,HH,WW=weight.shape
-    else:
-    K,C,HH,WW = weight.shape
-    K,OH,OW = grad.shape
-
-    dact = np.zeros_like(act)
-    dw = np.zeros_like(weight)
-
-    for i in range(K):
+        H,W=act.shape
+        HH,WW=weight.shape
         for j in range(OH):
             for k in range(OW):
-                input = act[:,j:j+HH,k:k+WW]
-                grad_curr = grad[i:i+1,j:j+1,k:k+1]
-                dw[i] += input * grad_curr #TODO original sums in N axis ???
-                dact[:,j:j+HH,k:k+WW] += weight[i]*grad_curr
+                print ("in compute loop {j}{k}".format(j=j,k=k))
+                input = act[j:j+HH,k:k+WW]
+                grad_curr = grad[j:j+1,k:k+1]
+                dw += input*grad_curr
+                print(weight)
+                print(grad_curr)
+                print(weight*grad_curr)
+                print(dact[j:j+HH,k:k+WW])
+                dact[j:j+HH,k:k+WW]+=weight*grad_curr
+    else:
+        #this is the general purpose case where we loop in the K and C dimensions
+        K,C,HH,WW = weight.shape
+        K,OH,OW = grad.shape
+        C,H,W=act.shape #NOTE: only one activation at a time (no N param)        
+
+        for i in range(K):
+            for j in range(OH):
+                for k in range(OW):
+                    input = act[:,j:j+HH,k:k+WW]
+                    grad_curr = grad[i:i+1,j:j+1,k:k+1]
+                    dw[i] += input * grad_curr #TODO original sums in N axis ???
+                    dact[:,j:j+HH,k:k+WW] += weight[i]*grad_curr
 
     return dact,dw
                                 
@@ -85,6 +102,7 @@ class PE:
         self.outDW=dict()
         self.inBuf=None
         self.outBuf=None
+        self.weightBuf=None
 
     def SetInAct(self,layer,act):
         self.inAct[layer]=act
@@ -104,6 +122,29 @@ class PE:
             
         self.outBuf=np.add(self.outBuf,conv)
 
+    def BackwardConv(self,kernel,layer):
+        #in backwards pass
+        #assume buffers have been filled prior to calling
+
+        #we compute the backprop gradient and the weight gradient using
+        #the gradient in the input buffer, the weight in the weight buffer and
+        #he locally stored activation
+        if self.outBuf==None:
+            self.outBuf=np.zeros_like(self.inAct[layer])\
+
+        #grad: loaded into input buffer by one to all broadcast
+        #act: stored locally from forward pass
+        #weight:loaded into weight buffer by per row scatter op
+        dact,dw = BackConvolve(self.inBuf,self.inAct[layer],self.weightBuf)
+
+        #output backprop gradient is stored in out dact dict (notice, accumulated over all K weights)
+        self.outDAct[layer] += dact
+
+        #weight buffer for current kernel hold weight gradient 'slice'
+        #(notice, each dw is seperate for each K weight, not accum)
+        print("{k},{l}".format(k=kernel,l=layer))
+        self.outDW[(kernel,layer)]=dw
+        
     def PrintInAct(self,layer):
         print("PE ID is {x},{y}".format(x=self.id[0],y=self.id[1]))
         print("Input Activations for layer {x}".format(x=layer))
@@ -144,7 +185,25 @@ class Core:
                 print (self.PEGrid[i,j].id,end="")
         print("")
 
-    def RowBroadcast(self,row,col,layer):
+
+    def RowWeightScatter(self,row,col,index=1,layer=0):
+        #in the specified row, the PE in the specified col will split its weight out to the other PEs in that row
+        #regardless of column, lowest index weight is assigned to the lowest index PE (leftmost =0 etc)
+        #for use in backward pass to distribute one weight kernal among all PEs
+
+        #index - argument to index into weights in a C loop if required
+        for c in range(0,self.size):
+            self.PEGrid[row,c].weightBuf=self.PEGrid[row,col].weights[layer][index*c,:,:]
+
+            
+    def GradBroadcast(self,row,col,layer=0):
+        #during the backwards pass the current gradient 'slice' in the K dimension is broadcast to all
+        #PEs for local computation
+        for i in range(0,self.size):
+            for j in range(0,self.size):
+                self.PEGrid[i,j].LoadInBuf(self.PEGrid[row,col].inGrad[0])
+
+    def RowActBroadcast(self,row,col,layer):
         #in the specified row, take the activation information stored in the given column
         #and broadcast it to the input buffer of all PEs in that row (including broadcaster)
         for c in range (0,self.size):            
@@ -165,6 +224,12 @@ class Core:
             for j in range(0,self.size):
                 #todo for now this is just one channel per row
                 self.PEGrid[i,j].ForwardConv(k,c)
+
+    def AllBackwardConv(self,k,l):
+        #all PEs in the grid perform the backward convolution computation
+        for i in range(0,self.size):
+            for j in range(0,self.size):
+                self.PEGrid[i,j].BackwardConv(k,l)
                 
     def ColAccum(self,row):
         #accumulate elementwise what is in the output buffer of each PE within each column
@@ -197,10 +262,10 @@ class Core:
             #loop through each column
             for col in range(0,self.size):
                 #broadcast current column and print buffers
-                self.RowBroadcast(0,col,0)
-                self.RowBroadcast(1,col,0)
-                self.RowBroadcast(2,col,0)
-                self.RowBroadcast(3,col,0)
+                self.RowActBroadcast(0,col,0)
+                self.RowActBroadcast(1,col,0)
+                self.RowActBroadcast(2,col,0)
+                self.RowActBroadcast(3,col,0)
                 
 
                 #Perform convolution on first filter for all PEs in first row
@@ -213,7 +278,33 @@ class Core:
             for c in range(0,self.size):
                 self.ColReduce(k,c)#TODO K loop is row
                 self.PEGrid[k,c].outAct[0]=self.PEGrid[k,c].outBuf
-                        
 
 
+
+    def Backward(self,layer,numKernels):
+        #perform backward pass computations and data movement for given layer
+        #assumes input activations from forward pass are laoded in memory(.inAct)
+        #assumes weights are loaded in memory (.weights)
+        #assumes input gradients are loaded in memory (.inGrad)
+
+        #first, make sure that the output buffers have nothing in them
+        #Need to loop through all K for the given layer
+        for k in range(numKernels):
+            colindex = k%self.size
+            #first, every row must scatter the current weights
+            for r in range(self.size):
+                #sets up all the weight buffers of all PEs
+                self.RowWeightScatter(r,colindex)
+
+            print(self.PEGrid[0,0].weightBuf)
+            print(self.PEGrid[0,1].weightBuf)
+            print(self.PEGrid[0,2].weightBuf)
+            print(self.PEGrid[0,3].weightBuf)            
+            #broadcast the current gradient to all PEs
+            #sets up the inBuff of all PEs
+            self.GradBroadcast(int(k/4),colindex)
+
+            #compute the weight gradient at each PE
+            #AND compute and accumulate the backward propogation gradient
+            self.AllBackwardConv(k,layer)
 

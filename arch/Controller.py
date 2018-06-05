@@ -45,8 +45,10 @@ baseline=ArchLib.Convolve(InAct[0],LayerWeights[0])
 #random gradient for backwards pass testing
 gradient = np.random.randint(3,size=baseline.shape)
 base_dact,base_dw = ArchLib.BackConvolve(gradient,InAct[0],LayerWeights[0])
-print("The baseline output gradient is:")
-print(base_dact)
+print("The baseline output gradient at 0 is:")
+print(base_dact[0])
+print("The baseline weight gradient for K=0 is:")
+print(base_dw[0])
 #------------------------------------------------------------------
 #split that activaiton in the C dimension and load into PEs
 #first row gets C=0,1,2,3 etc
@@ -80,6 +82,6 @@ for i in range(0,4):
 if error==0:
     print("forward pass convoultion output matches golden!!")
 #-----------------FORWARD PASS END---------------------------------
-
-
+C.Backward(0,1)#TODO all 16 kernels
+print(C.PEGrid[0,0].outDW[(0,0)])
 #-----------------BACKWARD PASS ---------------------------------
