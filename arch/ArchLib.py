@@ -50,37 +50,29 @@ def BackConvolve(grad,act,weight):
     #Gradient with respect to input (act)
     #Gradient with respect to weights (weight)
 
-    print("incoming activation is ")
-    print(act)
-    print(weight)
-    print(grad)
+    #need to pad the output so we can do a full deconvolution and match dimensions
     dact = np.zeros_like(act)
     dw = np.zeros_like(weight)    
     #Hack to make it work with gradient of only one 'channel
 
 
     if grad.ndim==2 and weight.ndim==2:
-        #this is the distributed case where we are only doing a single 'slice' of the computation
+        #this is the distributed case where we are only doing a single 'slice' of the computation        
         OH,OW=grad.shape
         H,W=act.shape
         HH,WW=weight.shape
         for j in range(OH):
             for k in range(OW):
-                print ("in compute loop {j}{k}".format(j=j,k=k))
                 input = act[j:j+HH,k:k+WW]
                 grad_curr = grad[j:j+1,k:k+1]
                 dw += input*grad_curr
-                print(weight)
-                print(grad_curr)
-                print(weight*grad_curr)
-                print(dact[j:j+HH,k:k+WW])
-                dact[j:j+HH,k:k+WW]+=weight*grad_curr
+                temp = weight*grad_curr
+                dact[j:j+HH,k:k+WW]+=temp
     else:
         #this is the general purpose case where we loop in the K and C dimensions
         K,C,HH,WW = weight.shape
         K,OH,OW = grad.shape
         C,H,W=act.shape #NOTE: only one activation at a time (no N param)        
-
         for i in range(K):
             for j in range(OH):
                 for k in range(OW):
@@ -88,6 +80,8 @@ def BackConvolve(grad,act,weight):
                     grad_curr = grad[i:i+1,j:j+1,k:k+1]
                     dw[i] += input * grad_curr #TODO original sums in N axis ???
                     dact[:,j:j+HH,k:k+WW] += weight[i]*grad_curr
+            print("iteration {i}".format(i=i))
+            print(weight[i][0])
 
     return dact,dw
                                 
@@ -129,20 +123,25 @@ class PE:
         #we compute the backprop gradient and the weight gradient using
         #the gradient in the input buffer, the weight in the weight buffer and
         #he locally stored activation
-        if self.outBuf==None:
-            self.outBuf=np.zeros_like(self.inAct[layer])\
-
         #grad: loaded into input buffer by one to all broadcast
         #act: stored locally from forward pass
         #weight:loaded into weight buffer by per row scatter op
         dact,dw = BackConvolve(self.inBuf,self.inAct[layer],self.weightBuf)
 
         #output backprop gradient is stored in out dact dict (notice, accumulated over all K weights)
-        self.outDAct[layer] += dact
+        if(layer in self.outDAct):
+            self.outDAct[layer] += dact
+        else:
+            self.outDAct[layer]=dact
+
+        if(self.id==(0,0)):
+            print("PE 0,0")
+#            print (self.outDAct[layer])
+            print(self.inBuf)
+            print(self.weightBuf)
 
         #weight buffer for current kernel hold weight gradient 'slice'
         #(notice, each dw is seperate for each K weight, not accum)
-        print("{k},{l}".format(k=kernel,l=layer))
         self.outDW[(kernel,layer)]=dw
         
     def PrintInAct(self,layer):
@@ -186,14 +185,14 @@ class Core:
         print("")
 
 
-    def RowWeightScatter(self,row,col,index=1,layer=0):
+    def RowWeightScatter(self,row,col,k=0,c_index=0,layer=0):
         #in the specified row, the PE in the specified col will split its weight out to the other PEs in that row
         #regardless of column, lowest index weight is assigned to the lowest index PE (leftmost =0 etc)
         #for use in backward pass to distribute one weight kernal among all PEs
 
         #index - argument to index into weights in a C loop if required
         for c in range(0,self.size):
-            self.PEGrid[row,c].weightBuf=self.PEGrid[row,col].weights[layer][index*c,:,:]
+            self.PEGrid[row,c].weightBuf=self.PEGrid[row,col].weights[k][(c_index*self.size)+c,:,:]
 
             
     def GradBroadcast(self,row,col,layer=0):
@@ -231,19 +230,6 @@ class Core:
             for j in range(0,self.size):
                 self.PEGrid[i,j].BackwardConv(k,l)
                 
-    def ColAccum(self,row):
-        #accumulate elementwise what is in the output buffer of each PE within each column
-        #store accumulated result in the buffer of the specified row
-        for col in range(0,self.size):
-            for i in range(0,self.size):
-                if(i != row):
-                    print ("-------------------")
-                    print ("row is "+ str(row) + " and col is " + str(col))                            
-                    print (self.PEGrid[row,col].outBuf)
-                    print (self.PEGrid[i,col].outBuf)                    
-                    self.PEGrid[row,col].outBuf=np.add(self.PEGrid[row,col].outBuf,self.PEGrid[i,col].outBuf)
-                    print (self.PEGrid[row,col].outBuf)
-        
     def Forward(self,layer):
         #this function assumes that the input activations are buffered in each PE
         #also assumes weights are buffered for given layer
@@ -294,17 +280,15 @@ class Core:
             #first, every row must scatter the current weights
             for r in range(self.size):
                 #sets up all the weight buffers of all PEs
-                self.RowWeightScatter(r,colindex)
+                #row,col,index,layer
+                self.RowWeightScatter(r,colindex,int(k/4),0)
 
-            print(self.PEGrid[0,0].weightBuf)
-            print(self.PEGrid[0,1].weightBuf)
-            print(self.PEGrid[0,2].weightBuf)
-            print(self.PEGrid[0,3].weightBuf)            
             #broadcast the current gradient to all PEs
             #sets up the inBuff of all PEs
             self.GradBroadcast(int(k/4),colindex)
 
             #compute the weight gradient at each PE
             #AND compute and accumulate the backward propogation gradient
+            #NOTE 
             self.AllBackwardConv(k,layer)
 
